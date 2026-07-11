@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Compiled output (regenerate with `npm run build`)
+dist/
+
+# Build outputs produced by the harness (one folder per plan)
+builds/
+
+# Dashboard run-state emitted by the opt-in --state flag
+.ds-runs/
+
+# Local env / secrets
+.env
+.env.local

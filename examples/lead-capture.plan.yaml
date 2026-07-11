@@ -1,0 +1,68 @@
+name: lead-capture-microsite
+description: >
+  A small standalone lead-capture microsite: a landing page with a form that
+  posts leads to a webhook (which Make.com will route into GoHighLevel). Static
+  front end plus a tiny Node webhook receiver for local testing.
+
+# Injected into every agent so builds stay on the Digital Solomon standard stack.
+stack:
+  - "Front end: static HTML/CSS/vanilla JS (no framework — keep it portable into GHL later)"
+  - "Local webhook receiver: Node.js + Express"
+  - "Leads ultimately flow to GoHighLevel via a Make.com webhook (stub the URL for now)"
+
+conventions:
+  - "Every file gets a short header comment explaining its role."
+  - "No secrets in code — read the webhook URL from an env var (MAKE_WEBHOOK_URL)."
+  - "Keep dependencies minimal; prefer the standard library where reasonable."
+
+# Default model for all tasks (aliases: opus | sonnet | haiku). Tasks may override.
+model: sonnet
+
+tasks:
+  - id: scaffold
+    title: Project scaffold
+    brief: >
+      Create the project structure: an index.html, styles.css, and app.js under
+      a public/ folder, plus a package.json for the webhook server. Add a
+      README describing how to run it.
+    acceptance:
+      - "public/ contains index.html, styles.css, app.js"
+      - "package.json exists with a start script"
+      - "README explains how to run locally"
+
+  - id: landing-page
+    title: Landing page + lead form
+    deps: [scaffold]
+    scope: ["public/index.html", "public/styles.css"]
+    brief: >
+      Build a clean, responsive landing page with a headline, short value
+      proposition, and a lead-capture form (name, email, phone). Style it well
+      in styles.css. The form should be accessible and mobile-friendly.
+    acceptance:
+      - "Form collects name, email, and phone with proper labels"
+      - "Page is responsive and looks presentable on mobile"
+
+  - id: webhook-server
+    title: Local webhook receiver
+    deps: [scaffold]
+    scope: ["server.js", "package.json"]
+    brief: >
+      Implement a small Express server (server.js) that serves the public/
+      folder and exposes POST /api/lead. On receipt it validates the payload
+      and forwards it to process.env.MAKE_WEBHOOK_URL (log instead if unset).
+    acceptance:
+      - "GET / serves the landing page"
+      - "POST /api/lead validates input and returns JSON"
+      - "Forwards to MAKE_WEBHOOK_URL when set, logs otherwise"
+
+  - id: wire-form
+    title: Wire the form to the webhook
+    deps: [landing-page, webhook-server]
+    scope: ["public/app.js"]
+    brief: >
+      In app.js, submit the form via fetch() to POST /api/lead, prevent the
+      default page reload, show a success or error message inline, and clear
+      the form on success.
+    acceptance:
+      - "Submitting posts to /api/lead without a full page reload"
+      - "User sees a clear success or error message"
