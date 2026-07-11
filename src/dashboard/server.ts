@@ -181,7 +181,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (pathname === "/api/runs" && method === "POST") {
-    const body = await readJsonBody(req);
+    // A malformed or oversized body is the client's fault → 400, not a 500.
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
     const params = validateRunRequest(body);
     const run = startRun(params);
     return sendJson(res, 201, { runId: run.id, run: run.summary() });

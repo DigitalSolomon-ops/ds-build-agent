@@ -103,6 +103,12 @@ try {
   const realRuns = runsAfter.runs.filter((r) => !r.dryRun);
   assert(realRuns.length === 0, "cancelling the confirm modal started no real run");
 
+  // Backend guardrail: a malformed run request is a client error (400), not 500.
+  const badReq = await fetch(BASE + "/api/runs", {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{ not json",
+  });
+  assert(badReq.status === 400, `malformed run body returns 400 (got ${badReq.status})`);
+
   assert(errors.length === 0, `no page/console errors (got ${errors.length}: ${errors.slice(0,2).join(" | ")})`);
 
   await page.screenshot({ path: "dashboard/verify-screenshot.png", fullPage: true });
