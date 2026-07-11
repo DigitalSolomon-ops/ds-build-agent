@@ -32,6 +32,22 @@ interface SseMsg {
 
 const MAX_LOG_LINES = 4000;
 
+/**
+ * Write to an SSE response, swallowing errors from a client that has already
+ * disconnected. Returns false if the socket is dead so the caller can drop it.
+ * Without this, a browser tab closing mid-run throws inside a timer/stdio
+ * callback (outside any request try/catch) and crashes the whole server.
+ */
+function safeWrite(res: ServerResponse, data: string): boolean {
+  try {
+    if (res.writableEnded || res.destroyed) return false;
+    res.write(data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 class Run {
   readonly id: string;
   readonly buildFolder: string;
@@ -169,7 +185,9 @@ class Run {
       if (this.logBuffer.length > MAX_LOG_LINES) this.logBuffer.shift();
     }
     const data = `data: ${JSON.stringify(msg)}\n\n`;
-    for (const res of this.subscribers) res.write(data);
+    for (const res of this.subscribers) {
+      if (!safeWrite(res, data)) this.subscribers.delete(res); // drop dead clients
+    }
   }
 
   private finish(code: number | null, status: RunStatus, signal?: NodeJS.Signals | null): void {
@@ -189,17 +207,26 @@ class Run {
       connection: "keep-alive",
       "x-accel-buffering": "no",
     });
-    res.write(`retry: 2000\n\n`);
+    safeWrite(res, `retry: 2000\n\n`);
     this.subscribers.add(res);
     // Replay so a late subscriber sees the whole run so far.
-    res.write(`data: ${JSON.stringify({ type: "hello", runId: this.id, dryRun: this.dryRun, status: this.status })}\n\n`);
-    if (this.lastState) res.write(`data: ${JSON.stringify({ type: "state", state: this.lastState })}\n\n`);
-    for (const msg of this.logBuffer) res.write(`data: ${JSON.stringify(msg)}\n\n`);
+    safeWrite(res, `data: ${JSON.stringify({ type: "hello", runId: this.id, dryRun: this.dryRun, status: this.status })}\n\n`);
+    if (this.lastState) safeWrite(res, `data: ${JSON.stringify({ type: "state", state: this.lastState })}\n\n`);
+    for (const msg of this.logBuffer) safeWrite(res, `data: ${JSON.stringify(msg)}\n\n`);
     if (this.status !== "running" && this.status !== "starting") {
-      res.write(`data: ${JSON.stringify({ type: "status", status: this.status, exitCode: this.exitCode })}\n\n`);
+      safeWrite(res, `data: ${JSON.stringify({ type: "status", status: this.status, exitCode: this.exitCode })}\n\n`);
     }
-    const ping = setInterval(() => res.write(`: ping\n\n`), 15000);
+    const ping = setInterval(() => {
+      if (!safeWrite(res, `: ping\n\n`)) {
+        clearInterval(ping);
+        this.subscribers.delete(res);
+      }
+    }, 15000);
     res.on("close", () => {
+      clearInterval(ping);
+      this.subscribers.delete(res);
+    });
+    res.on("error", () => {
       clearInterval(ping);
       this.subscribers.delete(res);
     });

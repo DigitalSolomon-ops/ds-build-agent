@@ -301,6 +301,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   sendError(res, 405, "Method not allowed");
 }
 
+// Safety net: a stray error anywhere (e.g. an SSE write to a socket that
+// closed mid-run) must LOG and keep the server alive, never crash the process.
+// This is what stops the dashboard from silently dying → ERR_CONNECTION_REFUSED.
+process.on("uncaughtException", (err) => {
+  console.error("[dashboard] uncaught exception (kept running):", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[dashboard] unhandled rejection (kept running):", reason);
+});
+
 const server = createServer((req, res) => {
   handle(req, res).catch((e) => {
     if (e instanceof HttpError) sendError(res, e.status, e.message);
@@ -310,6 +320,17 @@ const server = createServer((req, res) => {
       sendError(res, 500, "Internal server error");
     }
   });
+});
+
+// Fail loudly and clearly if the port is taken (instead of a raw stack trace).
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`✗ Port ${PORT} is already in use — the dashboard is probably already running.`);
+    console.error(`  Open http://${HOST}:${PORT}, or set DS_DASHBOARD_PORT to a free port.`);
+    process.exit(1);
+  }
+  console.error("✗ Server error:", err);
+  process.exit(1);
 });
 
 server.listen(PORT, HOST, () => {
