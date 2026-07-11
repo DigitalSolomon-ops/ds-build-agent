@@ -128,9 +128,12 @@ function validateRunRequest(body: unknown) {
  * Returns { isRepo:false } when the folder was never committed.
  */
 async function readCommits(folder: string) {
-  try {
-    await execFileP("git", ["-C", folder, "rev-parse", "--git-dir"]);
-  } catch {
+  // Require the build folder's OWN `.git`, not an ancestor's. `git rev-parse
+  // --git-dir` would succeed against a parent repo (e.g. an archived build
+  // nested inside the harness repo) and surface that repo's commits as if they
+  // were this build's rollback points. This mirrors the isolation fix in
+  // orchestrator.ts gitCommit — the dashboard only ever reads a build's own repo.
+  if (!existsSync(join(folder, ".git"))) {
     return { isRepo: false, commits: [] as unknown[] };
   }
   try {

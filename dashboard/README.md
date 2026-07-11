@@ -86,6 +86,22 @@ repo** — if it is, commits would land in the parent. Two things keep this safe
 
 If you run the **CLI** directly, prefer `--out C:\Users\marcu\ds-builds` too.
 
+### Canonical vs archived build folder
+
+There are two `fast-insurance-group` folders on disk from earlier work:
+
+- **Canonical (use this):** `C:\Users\marcu\ds-builds\fast-insurance-group` —
+  outside the harness repo, and where `DS_BUILDS_ROOT` points by default. The
+  dashboard reads plans, state, reports, and commits from here.
+- **Archived (do not use):** `ds-build-agent\builds\fast-insurance-group` —
+  output from earlier CLI runs, kept for reference only. It is git-ignored
+  (`builds/`) and has no `.git` of its own, so it sits *inside* the harness
+  repo. `readCommits` deliberately requires a build folder's **own** `.git`, so
+  the dashboard will never mistake the harness repo's history for this folder's
+  rollback points. An `ARCHIVED.md` note marks it on disk.
+
+Neither folder is deleted; only the canonical one is wired into the dashboard.
+
 ## Verify
 
 ```powershell

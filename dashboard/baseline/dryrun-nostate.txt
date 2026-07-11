@@ -1,0 +1,80 @@
+▸ Plan:        fast-insurance-group (47 tasks, 24 agent-built)
+▸ Building in: C:\Users\marcu\ds-builds\fast-insurance-group
+▸ Concurrency: 3   [DRY RUN — no agents, no writes]
+
+  ⏸ p0-domain-ghl — human → BLOCKERS.md
+  ⏸ p0-ghl-account — ghl → GHL-SETUP.md
+  ⏸ p0-redtrack-dns — human → BLOCKERS.md
+  ⏸ p0-redtrack-account — human → BLOCKERS.md
+  ⏸ p0-monetization-apply — human → BLOCKERS.md
+  ⏸ p0-trustedform — human → BLOCKERS.md
+  ⏸ p0-jornaya — human → BLOCKERS.md
+  ⏸ p0-ad-accounts — human → BLOCKERS.md
+  ⏸ p0-vapi-make — human → BLOCKERS.md
+  ⏸ p0-legal-review — human → BLOCKERS.md
+  ⏸ p1-ghl-funnel-structure — ghl → GHL-SETUP.md
+  ⏵ p1-scaffold — Scaffold static funnel project
+  ⏸ p2-redtrack-campaign — human → BLOCKERS.md
+  ⏸ p3-custom-fields — ghl → GHL-SETUP.md
+  ⏸ p3-inbound-webhook — ghl → GHL-SETUP.md
+  ⏸ p3-pipeline — ghl → GHL-SETUP.md
+  ⏸ p3-intake-workflow — ghl → GHL-SETUP.md
+  ⏸ p3-nurture — ghl → GHL-SETUP.md
+  ⏵ p3-document — Document GHL config
+  ⏵ p4-vapi-config — Vapi assistant config
+  ⏸ p5-partner-terms — human → BLOCKERS.md
+  ✓ p1-scaffold
+  ⏵ p1-advertorial — Advertorial lander
+  ✓ p3-document
+  ⏵ p1-param-capture — URL parameter capture
+  ✓ p4-vapi-config
+  ⏵ p1-quote-funnel — Multi-step quote funnel
+  ✓ p1-advertorial
+  ⏵ p1-legal-pages — Legal pages
+  ✓ p1-param-capture
+  ⏵ p2-wire-ctas — Wire CTAs to RedTrack (placeholder)
+  ✓ p1-quote-funnel
+  ⏸ p1-compliance-scripts — ghl → GHL-SETUP.md
+  ⏵ p1-consent-block — TCPA consent block + hidden cert fields
+  ✓ p1-legal-pages
+  ⏵ p1-datalayer — dataLayer events
+  ✓ p2-wire-ctas
+  ⏵ p4-scenario-a — Make Scenario A — Dial Trigger
+  ✓ p1-consent-block
+  ⏵ p1-submission-webhook — Submission -> GHL inbound webhook
+  ⏸ p6-consent-verify — human → BLOCKERS.md
+  ✓ p1-datalayer
+  ⏵ p4-scenario-b — Make Scenario B — Call Events
+  ✓ p4-scenario-a
+  ⏵ p4-warm-transfer — Warm transfer config
+  ✓ p1-submission-webhook
+  ⏵ p1-acceptance — Phase 1 acceptance sweep
+  ✓ p4-scenario-b
+  ⏵ p2-postbacks — Conversion postbacks from Make
+  ✓ p4-warm-transfer
+  ⏸ p4-acceptance — human → BLOCKERS.md
+  ⏵ p5-insert-offers — Insert live offers
+  ✓ p1-acceptance
+  ⏵ p5-dual-path — Dual-path monetization logic
+  ✓ p2-postbacks
+  ⏵ p2-capi — Meta CAPI + Google offline conversions
+  ✓ p5-insert-offers
+  ⏵ p6-automated-checks — Automated compliance checks
+  ✓ p5-dual-path
+  ⏵ p5-revenue-tracking — Revenue tracking + P&L
+  ✓ p2-capi
+  ⏵ p6-cert-retention — TrustedForm cert retention
+  ✓ p6-automated-checks
+  ✓ p5-revenue-tracking
+  ✓ p6-cert-retention
+  ⊘ p7-creatives — Skipped: launch gate closed — phase "6" not fully passed (awaiting human compliance sign-off).
+  ⊘ p7-ab-test — Skipped: launch gate closed — phase "6" not fully passed (awaiting human compliance sign-off).
+  ⊘ p7-kpi — Skipped: dependency "p7-creatives" did not resolve.
+  ⊘ p7-daily-report — Skipped: launch gate closed — phase "6" not fully passed (awaiting human compliance sign-off).
+
+─── Dry run complete in 0s ───
+   would build: 22   deferred (human/ghl): 21   skipped: 4   failed: 0
+   ⊘ p7-creatives: Skipped: launch gate closed — phase "6" not fully passed (awaiting human compliance sign-off).
+   ⊘ p7-ab-test: Skipped: launch gate closed — phase "6" not fully passed (awaiting human compliance sign-off).
+   ⊘ p7-kpi: Skipped: dependency "p7-creatives" did not resolve.
+   ⊘ p7-daily-report: Skipped: launch gate closed — phase "6" not fully passed (awaiting human compliance sign-off).

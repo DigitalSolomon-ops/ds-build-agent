@@ -44,6 +44,11 @@ try {
   const gateStatus = (await page.locator(".gate-status").textContent()).trim();
   assert(gateStatus === "BLOCKED", `gate shows BLOCKED (got "${gateStatus}")`);
 
+  // The panel must name the human sign-off task that holds the gate closed.
+  const gateBody = await page.locator("#gatePanel").textContent();
+  assert(/human sign-off/i.test(gateBody) && /p6-consent-verify/.test(gateBody),
+    "gate panel names p6-consent-verify as the human sign-off holding the gate");
+
   // Kick a DRY run (checkbox is checked by default).
   const dryChecked = await page.isChecked("#dryRun");
   assert(dryChecked, "dry-run toggle is ON by default");
