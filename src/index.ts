@@ -3,6 +3,7 @@ import { resolve, join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { loadPlan, PlanError } from "./parser.js";
 import { orchestrate } from "./orchestrator.js";
+import { createStateWriter } from "./state-writer.js";
 import type { TaskResult } from "./types.js";
 
 interface Cli {
@@ -11,6 +12,12 @@ interface Cli {
   concurrency: number;
   dryRun: boolean;
   only?: string[];
+  /**
+   * Opt-in run-state emitter. `undefined` = disabled (default, byte-for-byte
+   * identical behavior). Empty string = enabled with the default location.
+   * A path = enabled, writing state there.
+   */
+  state?: string;
 }
 
 function parseArgs(argv: string[]): Cli {
@@ -29,12 +36,21 @@ function parseArgs(argv: string[]): Cli {
   const out = get("--out") ?? join(process.cwd(), "builds");
   const concurrency = Number(get("--concurrency") ?? "3");
   const onlyRaw = get("--only");
+  // `--state` takes an optional directory. Bare `--state` (or followed by
+  // another flag) enables it at the default location, signalled by "".
+  let state: string | undefined;
+  const stateIdx = args.indexOf("--state");
+  if (stateIdx >= 0) {
+    const next = args[stateIdx + 1];
+    state = next && !next.startsWith("--") ? next : "";
+  }
   return {
     planPath: resolve(planPath),
     repoPath: resolve(out),
     concurrency: Number.isFinite(concurrency) ? concurrency : 3,
     dryRun: has("--dry-run"),
     only: onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+    state,
   };
 }
 
@@ -63,7 +79,8 @@ async function main() {
     process.exit(1);
   }
 
-  const repoPath = join(cli.repoPath, plan.name.replace(/[^\w.-]+/g, "-"));
+  const safeName = plan.name.replace(/[^\w.-]+/g, "-");
+  const repoPath = join(cli.repoPath, safeName);
   if (!cli.dryRun) mkdirSync(repoPath, { recursive: true });
 
   const agentCount = plan.tasks.filter((t) => t.executor === "agent" && t.auto).length;
@@ -72,11 +89,31 @@ async function main() {
   console.log(`▸ Concurrency: ${cli.concurrency}${cli.dryRun ? "   [DRY RUN — no agents, no writes]" : ""}\n`);
 
   const started = Date.now();
+
+  // Opt-in run-state emitter (behind --state). When disabled this stays null
+  // and nothing below changes the harness's default behavior or output.
+  const stateWriter =
+    cli.state !== undefined
+      ? createStateWriter({
+          plan,
+          planPath: cli.planPath,
+          repoPath,
+          // Default state dir lives OUTSIDE the build repo, next to (not inside)
+          // builds/<name>/, so commit_after_each_task never captures it.
+          stateDir: cli.state ? resolve(cli.state) : join(cli.repoPath, ".ds-runs", safeName),
+          concurrency: cli.concurrency,
+          dryRun: cli.dryRun,
+          startedAt: started,
+        })
+      : null;
+  if (stateWriter) console.log(`▸ State:       ${stateWriter.paths.runStatePath}\n`);
+
   const results = await orchestrate(plan, {
     repoPath,
     concurrency: cli.concurrency,
     dryRun: cli.dryRun,
     onEvent: (e) => {
+      stateWriter?.handleEvent(e);
       switch (e.type) {
         case "task-start":
           console.log(`  ⏵ ${e.task.id} — ${e.task.title}`);
@@ -101,6 +138,7 @@ async function main() {
     },
   });
 
+  stateWriter?.finalize(results);
   report(results, Date.now() - started, cli.dryRun);
   const failed = results.filter((r) => r.status === "failed").length;
   process.exit(failed > 0 ? 1 : 0);
