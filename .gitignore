@@ -13,3 +13,6 @@ builds/
 # Local env / secrets
 .env
 .env.local
+
+# Dashboard UI test artifact
+dashboard/verify-screenshot.png

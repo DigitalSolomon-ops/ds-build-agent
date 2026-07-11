@@ -5,13 +5,32 @@
  * so every input is validated and nothing is ever passed through a shell.
  */
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { existsSync, statSync } from "node:fs";
-import { extname, resolve } from "node:path";
+import { existsSync, statSync, readFileSync, readdirSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { extname, resolve, join, basename } from "node:path";
 import { loadPlan, PlanError } from "../parser.js";
 import type { BuildPlan } from "../types.js";
 import { analyzePlan } from "./plan-analysis.js";
-import { HOST, PORT, PUBLIC_DIR, BUILDS_ROOT, MIN_CONCURRENCY, MAX_CONCURRENCY } from "./config.js";
-import { sendJson, sendError, serveStatic, readJsonBody } from "./http.js";
+import { HOST, PORT, PUBLIC_DIR, BUILDS_ROOT, MIN_CONCURRENCY, MAX_CONCURRENCY, safePlanName } from "./config.js";
+import { sendJson, sendError, serveStatic, readJsonBody, containedPath } from "./http.js";
+
+const execFileP = promisify(execFile);
+
+/** The two docs the HARNESS itself authors; everything else is agent output. */
+const HARNESS_DOCS = new Set(["BLOCKERS.md", "GHL-SETUP.md"]);
+
+/** Resolve a `build` query param to an existing folder inside BUILDS_ROOT. */
+function resolveBuildFolder(buildParam: string | null): string {
+  if (!buildParam) throw new HttpError(400, "Missing `build` query parameter.");
+  const safe = safePlanName(buildParam);
+  const abs = containedPath(BUILDS_ROOT, safe);
+  if (!abs) throw new HttpError(400, "Invalid build name.");
+  if (!existsSync(abs) || !statSync(abs).isDirectory()) {
+    throw new HttpError(404, `No build folder for "${buildParam}".`);
+  }
+  return abs;
+}
 import {
   startRun,
   getRun,
@@ -103,6 +122,38 @@ function validateRunRequest(body: unknown) {
   return { planPath, plan, dryRun, concurrency, only };
 }
 
+/**
+ * Read the build's own git repo (created by commit_after_each_task). Commit
+ * subjects are `<task-id>: <title>`, so we split off the id for task linking.
+ * Returns { isRepo:false } when the folder was never committed.
+ */
+async function readCommits(folder: string) {
+  try {
+    await execFileP("git", ["-C", folder, "rev-parse", "--git-dir"]);
+  } catch {
+    return { isRepo: false, commits: [] as unknown[] };
+  }
+  try {
+    const { stdout } = await execFileP(
+      "git",
+      ["-C", folder, "log", "--no-color", "--pretty=format:%H%x1f%s%x1f%aI"],
+      { maxBuffer: 4 * 1024 * 1024 },
+    );
+    const commits = stdout
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [hash, subject, date] = line.split("\x1f");
+        const sep = subject.indexOf(": ");
+        const taskId = sep > 0 ? subject.slice(0, sep) : null;
+        return { hash, short: hash.slice(0, 8), subject, date, taskId };
+      });
+    return { isRepo: true, commits };
+  } catch (e) {
+    return { isRepo: true, commits: [] as unknown[], error: (e as Error).message };
+  }
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${HOST}:${PORT}`);
   const { pathname } = url;
@@ -148,7 +199,54 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return sendJson(res, 200, { run: run.summary() });
   }
 
+  // Last persisted run-state.json for a build (for reloading a finished run).
+  if (pathname === "/api/state" && method === "GET") {
+    const folder = resolveBuildFolder(url.searchParams.get("build"));
+    const statePath = join(BUILDS_ROOT, ".ds-runs", basename(folder), "run-state.json");
+    if (!existsSync(statePath)) return sendJson(res, 200, { state: null });
+    try {
+      return sendJson(res, 200, { state: JSON.parse(readFileSync(statePath, "utf8")) });
+    } catch {
+      throw new HttpError(409, "run-state.json is mid-write; retry.");
+    }
+  }
+
+  // List the report/handoff markdown files present in a build folder.
+  if (pathname === "/api/files" && method === "GET") {
+    const folder = resolveBuildFolder(url.searchParams.get("build"));
+    const files = readdirSync(folder, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith(".md"))
+      .map((d) => ({
+        name: d.name,
+        harnessAuthored: HARNESS_DOCS.has(d.name),
+        size: statSync(join(folder, d.name)).size,
+      }))
+      .sort((a, b) => Number(b.harnessAuthored) - Number(a.harnessAuthored) || a.name.localeCompare(b.name));
+    return sendJson(res, 200, { files });
+  }
+
+  // Raw text of a single whitelisted .md file inside a build folder.
+  if (pathname === "/api/file" && method === "GET") {
+    const folder = resolveBuildFolder(url.searchParams.get("build"));
+    const nameParam = url.searchParams.get("file") ?? "";
+    if (extname(nameParam).toLowerCase() !== ".md") throw new HttpError(400, "Only .md files.");
+    const abs = containedPath(folder, nameParam);
+    if (!abs) throw new HttpError(403, "Path escapes the build folder.");
+    if (!existsSync(abs) || !statSync(abs).isFile()) throw new HttpError(404, "File not found.");
+    return sendJson(res, 200, { name: basename(abs), content: readFileSync(abs, "utf8") });
+  }
+
+  // Git commits in a build's own repo — rollback references per task.
+  if (pathname === "/api/commits" && method === "GET") {
+    const folder = resolveBuildFolder(url.searchParams.get("build"));
+    return sendJson(res, 200, await readCommits(folder));
+  }
+
   // ---- Static client ----
+  if (pathname === "/favicon.ico" && method === "GET") {
+    res.writeHead(204).end();
+    return;
+  }
   if (method === "GET") {
     return serveStatic(res, PUBLIC_DIR, pathname);
   }
