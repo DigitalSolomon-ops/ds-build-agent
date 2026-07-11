@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { BuildPlan, Task, TaskResult } from "./types.js";
@@ -193,13 +193,19 @@ function writeHandoff(repoPath: string, doc: string, task: Task): void {
 
 /** git add -A && commit after a successful agent task (best-effort). */
 async function gitCommit(repoPath: string, task: Task): Promise<void> {
-  const git = (args: string[]) => exec("git", args, { cwd: repoPath });
-  // Ensure a repo + identity exist; ignore "already exists".
-  await git(["rev-parse", "--git-dir"]).catch(async () => {
+  // `git -C repoPath` binds every command to the build folder regardless of cwd.
+  const git = (args: string[]) => exec("git", ["-C", repoPath, ...args]);
+  // Ensure the BUILD FOLDER ITSELF is a git repo. We check for its own `.git`
+  // rather than `git rev-parse --git-dir` (which succeeds for an *ancestor*
+  // repo): if the build folder is nested inside another repo, rev-parse would
+  // find the parent and commit rollback points there. Initializing the build
+  // folder as its own repo keeps commits — and the rollback history the
+  // dashboard links to — local to each build.
+  if (!existsSync(join(repoPath, ".git"))) {
     await git(["init"]);
     await git(["config", "user.email", "harness@digitalsolomon.local"]);
     await git(["config", "user.name", "ds-build-agent"]);
-  });
+  }
   await git(["add", "-A"]);
   // Nothing to commit is fine.
   await git(["commit", "-m", `${task.id}: ${task.title}`]).catch(() => {});
