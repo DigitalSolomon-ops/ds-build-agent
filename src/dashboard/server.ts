@@ -4,6 +4,7 @@
  * Bound to 127.0.0.1 only. It can spawn the harness (a real, paid operation),
  * so every input is validated and nothing is ever passed through a shell.
  */
+import "./load-env.js"; // must be first: loads .env before anything reads process.env
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, statSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { execFile } from "node:child_process";
