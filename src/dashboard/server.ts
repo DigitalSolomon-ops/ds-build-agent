@@ -6,7 +6,7 @@
  */
 import "./load-env.js"; // must be first: loads .env before anything reads process.env
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { existsSync, statSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, statSync, readFileSync, readdirSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { extname, resolve, join, basename } from "node:path";
@@ -21,6 +21,16 @@ const execFileP = promisify(execFile);
 
 /** The two docs the HARNESS itself authors; everything else is agent output. */
 const HARNESS_DOCS = new Set(["BLOCKERS.md", "GHL-SETUP.md"]);
+
+/** Documents a human may attach for agents to read. No executables/scripts. */
+const ALLOWED_DOC_EXT = new Set([
+  ".pdf", ".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".rtf",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+  ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+]);
+
+/** Cap on an uploaded document's JSON body (base64 inflates ~33%). */
+const MAX_DOC_BODY_BYTES = 20 * 1024 * 1024;
 
 /** Resolve a `build` query param to an existing folder inside BUILDS_ROOT. */
 function resolveBuildFolder(buildParam: string | null): string {
@@ -281,6 +291,76 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!abs) throw new HttpError(403, "Path escapes the build folder.");
     if (!existsSync(abs) || !statSync(abs).isFile()) throw new HttpError(404, "File not found.");
     return sendJson(res, 200, { name: basename(abs), content: readFileSync(abs, "utf8") });
+  }
+
+  // List documents a human has attached for the agents (build/inputs/).
+  if (pathname === "/api/build-files" && method === "GET") {
+    const folder = resolveBuildFolder(url.searchParams.get("build"));
+    const inputsDir = join(folder, "inputs");
+    if (!existsSync(inputsDir)) return sendJson(res, 200, { files: [] });
+    const files = readdirSync(inputsDir, { withFileTypes: true })
+      .filter((d) => d.isFile())
+      .map((d) => ({ name: d.name, size: statSync(join(inputsDir, d.name)).size }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return sendJson(res, 200, { files });
+  }
+
+  // Attach a document for the agents. Saved under build/inputs/ so agents (whose
+  // cwd is the build folder) can read it on the next run. No executables.
+  if (pathname === "/api/build-files" && method === "POST") {
+    const folder = resolveBuildFolder(url.searchParams.get("build"));
+    let body: unknown;
+    try {
+      body = await readJsonBody(req, MAX_DOC_BODY_BYTES);
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    if (typeof body !== "object" || body === null) throw new HttpError(400, "Expected a JSON object.");
+    const b = body as Record<string, unknown>;
+    const filename = typeof b.filename === "string" ? b.filename : "";
+    const contentBase64 = typeof b.contentBase64 === "string" ? b.contentBase64 : "";
+    const base = basename(filename);
+    if (!base) throw new HttpError(400, "Missing filename.");
+    if (!ALLOWED_DOC_EXT.has(extname(base).toLowerCase())) {
+      throw new HttpError(400, `Unsupported file type. Allowed: ${[...ALLOWED_DOC_EXT].join(" ")}`);
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(contentBase64, "base64");
+    } catch {
+      throw new HttpError(400, "Invalid file content.");
+    }
+    if (!bytes.length) throw new HttpError(400, "Uploaded file is empty.");
+    const inputsDir = join(folder, "inputs");
+    const abs = containedPath(inputsDir, safePlanName(base));
+    if (!abs) throw new HttpError(400, "Invalid filename.");
+    mkdirSync(inputsDir, { recursive: true });
+    writeFileSync(abs, bytes);
+    return sendJson(res, 201, { name: basename(abs), size: bytes.length });
+  }
+
+  // Answer a human/GHL handoff: append a timestamped note to BLOCKERS.md or
+  // GHL-SETUP.md. Whitelisted docs only; additive (never rewrites agent output).
+  if (pathname === "/api/handoff-note" && method === "POST") {
+    const folder = resolveBuildFolder(url.searchParams.get("build"));
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    if (typeof body !== "object" || body === null) throw new HttpError(400, "Expected a JSON object.");
+    const b = body as Record<string, unknown>;
+    const doc = typeof b.doc === "string" ? b.doc : "";
+    const note = typeof b.note === "string" ? b.note.trim() : "";
+    if (!HARNESS_DOCS.has(doc)) throw new HttpError(400, "doc must be BLOCKERS.md or GHL-SETUP.md.");
+    if (!note) throw new HttpError(400, "note is empty.");
+    if (note.length > 20000) throw new HttpError(400, "note is too long.");
+    const ts = new Date().toISOString();
+    const quoted = note.replace(/\r\n/g, "\n").replace(/\n/g, "\n> ");
+    const block = `\n> **Human update — ${ts}**\n>\n> ${quoted}\n`;
+    appendFileSync(join(folder, doc), block);
+    return sendJson(res, 201, { ok: true, doc });
   }
 
   // Git commits in a build's own repo — rollback references per task.

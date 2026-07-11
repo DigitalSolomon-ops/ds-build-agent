@@ -123,9 +123,10 @@ function renderDashboard() {
   const { section: phasesSection, cardById } = renderPhases(view);
   const logPanel = renderLogPanel();
   const filesPanel = renderFilesPanel();
+  const inputsPanel = renderInputsPanel();
   app.append(h("div", { class: "cols" },
     phasesSection,
-    h("aside", { class: "side" }, logPanel, filesPanel)));
+    h("aside", { class: "side" }, logPanel, filesPanel, inputsPanel)));
 
   const graphPanel = h("section", { class: "card graph-card" },
     h("details", { open: true },
@@ -383,6 +384,100 @@ async function openFile(name) {
   }
 }
 
+// ---------- provide to agents (documents + handoff answers) ----------
+function renderInputsPanel() {
+  const docInput = h("input", {
+    type: "file", id: "docFile", style: "display:none",
+    accept: ".pdf,.txt,.md,.csv,.json,.yaml,.yml,.rtf,.png,.jpg,.jpeg,.gif,.webp,.svg,.doc,.docx,.xls,.xlsx,.ppt,.pptx",
+    onchange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; handleDocUpload(f); },
+  });
+  const list = h("div", { class: "files-list", id: "inputsList" }, h("span", { class: "muted small" }, "—"));
+
+  const handoffDoc = h("select", { id: "handoffDoc", class: "select" },
+    h("option", { value: "BLOCKERS.md" }, "BLOCKERS.md (human)"),
+    h("option", { value: "GHL-SETUP.md" }, "GHL-SETUP.md (ghl)"));
+  const handoffNote = h("textarea", { id: "handoffNote", class: "note-input",
+    placeholder: "Answer a blocked/human task — e.g. “DNS configured, CNAME points to …”. Saved to the doc for the next run." });
+
+  return h("section", { class: "card inputs-panel" },
+    h("div", { class: "card-head" }, h("h3", {}, "Provide to agents"),
+      h("span", { class: "muted small", id: "inputsMsg" }, "")),
+    h("div", { class: "inputs-sub" },
+      h("div", { class: "sub-head" },
+        h("strong", { class: "small" }, "Documents"),
+        h("button", { class: "btn tiny", onclick: () => docInput.click() }, "Attach document"),
+        docInput),
+      h("p", { class: "muted tiny" }, "Saved to the build’s inputs/ folder; agents read them on the next run. Max ~14 MB."),
+      list),
+    h("div", { class: "inputs-sub" },
+      h("div", { class: "sub-head" }, h("strong", { class: "small" }, "Answer a handoff")),
+      handoffDoc, handoffNote,
+      h("div", { class: "sub-actions" },
+        h("button", { class: "btn tiny primary", onclick: saveHandoffNote }, "Save update"),
+        h("span", { class: "muted small", id: "handoffMsg" }, ""))));
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",", 2)[1] || "");
+    r.onerror = () => reject(new Error("Could not read file"));
+    r.readAsDataURL(file);
+  });
+}
+
+async function handleDocUpload(file) {
+  if (!file) return;
+  const msg = $("#inputsMsg");
+  msg.className = "muted small";
+  msg.textContent = `Uploading ${file.name}…`;
+  try {
+    const contentBase64 = await fileToBase64(file);
+    const { name, size } = await api.uploadBuildFile(state.plan.view.name, file.name, contentBase64);
+    msg.textContent = `Added ${name} (${(size / 1024).toFixed(1)} KB)`;
+    loadInputs();
+  } catch (e) {
+    msg.textContent = "Upload error: " + e.message;
+    msg.className = "small bad";
+  }
+}
+
+async function loadInputs() {
+  const list = $("#inputsList");
+  if (!list) return;
+  try {
+    const { files } = await api.buildFiles(state.plan.view.name);
+    list.innerHTML = "";
+    if (!files.length) { list.append(h("span", { class: "muted small" }, "No documents provided yet.")); return; }
+    for (const f of files) {
+      list.append(h("div", { class: "file-item static" },
+        h("span", { class: "mono small" }, f.name),
+        h("span", { class: "muted tiny" }, (f.size / 1024).toFixed(1) + " KB")));
+    }
+  } catch (e) {
+    list.innerHTML = "";
+    list.append(h("span", { class: "muted small" }, e.message));
+  }
+}
+
+async function saveHandoffNote() {
+  const doc = $("#handoffDoc").value;
+  const note = $("#handoffNote").value.trim();
+  const msg = $("#handoffMsg");
+  if (!note) { msg.textContent = "Type an update first."; msg.className = "small bad"; return; }
+  msg.className = "muted small";
+  msg.textContent = "Saving…";
+  try {
+    await api.addHandoffNote(state.plan.view.name, doc, note);
+    $("#handoffNote").value = "";
+    msg.textContent = `Saved to ${doc}`;
+    loadFiles(); // reflect the doc's new size in Reports & handoffs
+  } catch (e) {
+    msg.textContent = "Error: " + e.message;
+    msg.className = "small bad";
+  }
+}
+
 // ---------- commits ----------
 async function loadCommits() {
   try {
@@ -408,6 +503,7 @@ function applyEverywhere(snapshot) {
 /** After load or run end: pull last state, files, commits. */
 async function refreshBuildData() {
   loadFiles();
+  loadInputs();
   loadCommits();
   try {
     const { state: snap } = await api.state(state.plan.view.name);

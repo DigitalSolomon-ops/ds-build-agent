@@ -194,7 +194,27 @@ main { padding: 18px; max-width: 1240px; margin: 0 auto; }
   padding: 6px 10px; cursor: pointer; color: var(--text);
 }
 .file-item:hover { border-color: var(--accent); }
+.file-item.static { cursor: default; }
+.file-item.static:hover { border-color: var(--border); }
 .file-item .muted { margin-left: auto; }
+
+/* provide-to-agents panel */
+.inputs-panel .inputs-sub { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.inputs-panel .inputs-sub:first-of-type { border-top: none; padding-top: 0; }
+.inputs-panel .sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.inputs-panel .sub-head .btn { margin-left: auto; }
+.select {
+  width: 100%; padding: 5px 8px; margin-bottom: 6px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.note-input {
+  width: 100%; min-height: 62px; resize: vertical; box-sizing: border-box;
+  padding: 6px 8px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; font: inherit;
+}
+.note-input:focus, .select:focus { outline: none; border-color: var(--accent); }
+.sub-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 
 /* graph */
 .graph-scroll { overflow: auto; max-height: 520px; margin-top: 8px; }

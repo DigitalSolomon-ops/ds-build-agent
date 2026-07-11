@@ -34,6 +34,11 @@ export const api = {
   file: (build, name) =>
     getJson(`/api/file?build=${encodeURIComponent(build)}&file=${encodeURIComponent(name)}`),
   commits: (build) => getJson("/api/commits?build=" + encodeURIComponent(build)),
+  buildFiles: (build) => getJson("/api/build-files?build=" + encodeURIComponent(build)),
+  uploadBuildFile: (build, filename, contentBase64) =>
+    postJson("/api/build-files?build=" + encodeURIComponent(build), { filename, contentBase64 }),
+  addHandoffNote: (build, doc, note) =>
+    postJson("/api/handoff-note?build=" + encodeURIComponent(build), { doc, note }),
 };
 
 /**

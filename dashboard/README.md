@@ -53,6 +53,11 @@ Environment:
   (`BLOCKERS.md` / `GHL-SETUP.md` are flagged as harness-authored).
 - **Commits** — when `commit_after_each_task` is on, each built task links to its
   commit as a rollback reference.
+- **Provide to agents** — attach documents (PDF/txt/csv/images/office docs) that
+  are saved to the build's `inputs/` folder for agents to read on the next run,
+  and answer a human/GHL handoff by appending a timestamped note to `BLOCKERS.md`
+  or `GHL-SETUP.md`. (Agents read these on the next run — this is not a live,
+  mid-task chat; agent tasks run headlessly to completion.)
 
 ## Triggering runs
 

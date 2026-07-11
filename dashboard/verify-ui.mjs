@@ -126,6 +126,16 @@ try {
   const uploadedTasks = await page.locator(".task").count();
   assert(uploadedTasks === 47, `uploaded plan rendered 47 tasks (got ${uploadedTasks})`);
 
+  // Provide-to-agents panel: attach a document and see it listed.
+  assert(await page.locator(".inputs-panel").count() === 1, "‘Provide to agents’ panel is present");
+  await page.setInputFiles("#docFile", {
+    name: "e2e-provided.txt", mimeType: "text/plain", buffer: Buffer.from("e2e: a document for the agents"),
+  });
+  await page.waitForFunction(
+    () => document.querySelector("#inputsList")?.textContent?.includes("e2e-provided.txt"),
+    { timeout: 8000 });
+  assert(true, "attached document appears in the inputs list");
+
   assert(errors.length === 0, `no page/console errors (got ${errors.length}: ${errors.slice(0,2).join(" | ")})`);
 
   await page.screenshot({ path: "dashboard/verify-screenshot.png", fullPage: true });
