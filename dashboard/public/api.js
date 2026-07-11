@@ -25,6 +25,7 @@ export async function postJson(url, payload) {
 export const api = {
   health: () => getJson("/api/health"),
   plan: (path) => getJson("/api/plan?path=" + encodeURIComponent(path)),
+  uploadPlan: (filename, content) => postJson("/api/plans", { filename, content }),
   runs: () => getJson("/api/runs"),
   startRun: (payload) => postJson("/api/runs", payload),
   stopRun: (id) => postJson(`/api/runs/${encodeURIComponent(id)}/stop`, {}),

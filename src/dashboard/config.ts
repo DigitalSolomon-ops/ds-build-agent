@@ -23,6 +23,16 @@ export const BUILDS_ROOT = process.env.DS_BUILDS_ROOT
   ? resolve(process.env.DS_BUILDS_ROOT)
   : resolve(HARNESS_ROOT, "..", "ds-builds");
 
+/**
+ * Where plans uploaded through the UI are persisted. Uploaded YAML must land on
+ * disk (with a real path) so the harness can be spawned against it later — a
+ * browser file input only exposes the file's bytes, never its original path.
+ * Kept OUTSIDE the repo, like builds, so it's never swept into a commit.
+ */
+export const PLANS_ROOT = process.env.DS_PLANS_ROOT
+  ? resolve(process.env.DS_PLANS_ROOT)
+  : resolve(HARNESS_ROOT, "..", "ds-plans");
+
 /** Loopback only. Never bind 0.0.0.0 or a LAN address — this can spawn processes. */
 export const HOST = "127.0.0.1";
 export const PORT = Number(process.env.DS_DASHBOARD_PORT ?? "4317");

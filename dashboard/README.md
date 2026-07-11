@@ -1,8 +1,13 @@
-# ds-build dashboard
+# Agent Solomon - 007
 
 A local, single-user web dashboard for the `ds-build-agent` harness. It **loads
 a YAML plan and visualizes it**, **observes runs live**, and can **trigger runs**
 (dry-run by default; a real run needs explicit confirmation).
+
+Load a plan by typing its path and clicking **Load**, or click **Upload YAML…**
+to pick a `.yaml`/`.yml` file — the upload is validated and saved to
+`DS_PLANS_ROOT` (default `C:\Users\marcu\ds-plans`, outside the repo) so it has a
+real on-disk path the harness can be run against.
 
 It is additive: the harness runs exactly as before without it. The only harness
 change it relies on is an **opt-in `--state` flag** (see below), which is off by
@@ -26,6 +31,8 @@ Environment:
   never its value.
 - `DS_BUILDS_ROOT` — where builds live. Default `C:\Users\marcu\ds-builds`
   (deliberately **outside** this repo — see "Builds location" below).
+- `DS_PLANS_ROOT` — where uploaded plans are saved. Default
+  `C:\Users\marcu\ds-plans` (also outside this repo).
 - `DS_DASHBOARD_PORT` — default `4317`.
 
 ## What it shows

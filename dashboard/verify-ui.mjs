@@ -20,6 +20,12 @@ page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 try {
   await page.goto(BASE, { waitUntil: "networkidle" });
 
+  // Dashboard identity.
+  const title = await page.title();
+  assert(title === "Agent Solomon - 007", `page title is "Agent Solomon - 007" (got "${title}")`);
+  const h1 = (await page.locator("header h1").textContent()).trim();
+  assert(h1 === "Agent Solomon - 007", `header names the dashboard "Agent Solomon - 007" (got "${h1}")`);
+
   // Load the plan.
   await page.fill("#planPath", PLAN);
   await page.click("button.primary");
@@ -108,6 +114,17 @@ try {
     method: "POST", headers: { "content-type": "application/json" }, body: "{ not json",
   });
   assert(badReq.status === 400, `malformed run body returns 400 (got ${badReq.status})`);
+
+  // Upload flow: pick a YAML via the file input; the server persists it under
+  // ds-plans and hands back a real path the UI reloads from.
+  await page.setInputFiles("#planFile", PLAN);
+  await page.waitForFunction(
+    () => /[\\/]ds-plans[\\/]/.test(document.querySelector("#planPath")?.value || ""),
+    { timeout: 8000 });
+  const uploadedPath = await page.locator("#planPath").inputValue();
+  assert(/[\\/]ds-plans[\\/]/.test(uploadedPath), `upload persisted the plan under ds-plans (got ${uploadedPath})`);
+  const uploadedTasks = await page.locator(".task").count();
+  assert(uploadedTasks === 47, `uploaded plan rendered 47 tasks (got ${uploadedTasks})`);
 
   assert(errors.length === 0, `no page/console errors (got ${errors.length}: ${errors.slice(0,2).join(" | ")})`);
 

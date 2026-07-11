@@ -45,10 +45,48 @@ function loadBar(health) {
     h("div", { class: "card-head" }, h("h2", {}, "Load a plan")),
     h("div", { class: "load-row" },
       input,
-      h("button", { class: "btn primary", onclick: doLoad }, "Load")),
+      h("button", { class: "btn primary", onclick: doLoad }, "Load"),
+      ...uploadControl()),
+    h("p", { class: "muted small" }, "Type a path and Load, or ", h("strong", {}, "Upload YAML"), " to pick a file."),
     health ? h("p", { class: "muted small" }, `builds root: `, h("code", {}, health.buildsRoot)) : null,
     h("p", { class: "load-msg muted small", id: "loadMsg" }, ""),
   );
+}
+
+/**
+ * A hidden file input + a button that opens the OS file picker. The browser
+ * only hands us the file's bytes (not its path), so we read the text and POST
+ * it to /api/plans, which persists it and returns a real on-disk path.
+ */
+function uploadControl() {
+  const input = h("input", {
+    type: "file", id: "planFile", accept: ".yaml,.yml", style: "display:none",
+    onchange: (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = ""; // let the same file be re-picked later
+      handleUpload(file);
+    },
+  });
+  const btn = h("button", { class: "btn", onclick: () => input.click() }, "Upload YAML…");
+  return [btn, input];
+}
+
+async function handleUpload(file) {
+  if (!file) return;
+  const msg = $("#loadMsg");
+  msg.className = "load-msg muted small";
+  msg.textContent = `Uploading ${file.name}…`;
+  try {
+    const content = await file.text();
+    const { path: abs, view } = await api.uploadPlan(file.name, content);
+    state.plan = { path: abs, view };
+    state.latest = null; // a freshly uploaded plan has no prior run overlay yet
+    renderDashboard();
+    await refreshBuildData();
+  } catch (e) {
+    msg.textContent = "Upload error: " + e.message;
+    msg.className = "load-msg small bad";
+  }
 }
 
 async function doLoad() {
@@ -121,6 +159,7 @@ function loadBarCompact() {
       h("input", { type: "text", id: "planPath", class: "path-input", value: state.plan.path,
         onkeydown: (e) => { if (e.key === "Enter") doLoad(); } }),
       h("button", { class: "btn", onclick: doLoad }, "Reload"),
+      ...uploadControl(),
       h("span", { class: "muted small", id: "loadMsg" }, "")));
 }
 

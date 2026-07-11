@@ -5,14 +5,15 @@
  * so every input is validated and nothing is ever passed through a shell.
  */
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { existsSync, statSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, statSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { extname, resolve, join, basename } from "node:path";
-import { loadPlan, PlanError } from "../parser.js";
+import { parse as parseYaml } from "yaml";
+import { loadPlan, validatePlan, PlanError } from "../parser.js";
 import type { BuildPlan } from "../types.js";
 import { analyzePlan } from "./plan-analysis.js";
-import { HOST, PORT, PUBLIC_DIR, BUILDS_ROOT, MIN_CONCURRENCY, MAX_CONCURRENCY, safePlanName } from "./config.js";
+import { HOST, PORT, PUBLIC_DIR, BUILDS_ROOT, PLANS_ROOT, MIN_CONCURRENCY, MAX_CONCURRENCY, safePlanName } from "./config.js";
 import { sendJson, sendError, serveStatic, readJsonBody, containedPath } from "./http.js";
 
 const execFileP = promisify(execFile);
@@ -176,6 +177,42 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return sendJson(res, 200, { path: abs, view: analyzePlan(plan) });
   }
 
+  // Upload a plan chosen in the browser. A file input only exposes bytes, not a
+  // path, so we validate the YAML and PERSIST it under PLANS_ROOT — giving it a
+  // real on-disk path the run manager can later spawn the harness against.
+  if (pathname === "/api/plans" && method === "POST") {
+    let body: unknown;
+    try {
+      body = await readJsonBody(req, 1024 * 1024); // plans are small; 1 MB is ample
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    if (typeof body !== "object" || body === null) throw new HttpError(400, "Expected a JSON object.");
+    const b = body as Record<string, unknown>;
+    const filename = typeof b.filename === "string" ? b.filename : "";
+    const content = typeof b.content === "string" ? b.content : "";
+    if (!content.trim()) throw new HttpError(400, "Uploaded file is empty.");
+    const base = basename(filename);
+    const ext = extname(base).toLowerCase();
+    if (ext !== ".yaml" && ext !== ".yml") throw new HttpError(400, "Only .yaml or .yml files.");
+
+    // Validate BEFORE writing so a bad plan never lands on disk.
+    let plan: BuildPlan;
+    try {
+      plan = validatePlan(parseYaml(content));
+    } catch (e) {
+      if (e instanceof PlanError) throw new HttpError(400, `Invalid plan: ${e.message}`);
+      throw new HttpError(400, `Could not parse YAML: ${(e as Error).message}`);
+    }
+
+    // basename + safePlanName strip any directory and traversal; the result is
+    // always a plain filename inside PLANS_ROOT.
+    const abs = join(PLANS_ROOT, safePlanName(base));
+    mkdirSync(PLANS_ROOT, { recursive: true });
+    writeFileSync(abs, content, "utf8");
+    return sendJson(res, 201, { path: abs, view: analyzePlan(plan) });
+  }
+
   if (pathname === "/api/runs" && method === "GET") {
     return sendJson(res, 200, { runs: listRuns() });
   }
@@ -276,8 +313,9 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
-  console.log(`▸ ds-build dashboard on http://${HOST}:${PORT}`);
+  console.log(`▸ Agent Solomon - 007 on http://${HOST}:${PORT}`);
   console.log(`▸ Builds root:        ${BUILDS_ROOT}`);
+  console.log(`▸ Plans root:         ${PLANS_ROOT}`);
   console.log(`▸ ANTHROPIC_API_KEY:  ${process.env.ANTHROPIC_API_KEY ? "set" : "not set"}`);
 });
 
