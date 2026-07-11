@@ -29,6 +29,15 @@ build-plan.yaml ──▶ parse ──▶ task graph ──▶ orchestrate ─�
    `query()`; each task gets the shared stack context + its own brief, and
    builds headlessly (`permissionMode: "acceptEdits"`).
 
+## Dashboard
+
+A local web dashboard visualizes plans, observes runs live, and can trigger
+runs (dry-run by default). See [`dashboard/README.md`](dashboard/README.md).
+
+```powershell
+npm run dashboard   # http://127.0.0.1:4317 (loopback only)
+```
+
 ## Setup
 
 Requires **Node.js 18+** and an Anthropic API key.
