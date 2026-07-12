@@ -62,11 +62,20 @@ function taskPrompt(task: Task): string {
  * Streams the agent's messages to `onMessage` (for live logging) and
  * resolves to a structured result.
  */
+/** Optional integration hookups injected by the runtime (cloud-job). */
+export interface AgentIntegrations {
+  /** MCP servers handed to every agent (e.g. GHL scoped to one sub-account). */
+  mcpServers?: Record<string, { type: "http"; url: string; headers?: Record<string, string> }>;
+  /** Extra allowed tool patterns (e.g. "mcp__ghl__*"). */
+  extraAllowedTools?: string[];
+}
+
 export async function runTask(
   task: Task,
   plan: BuildPlan,
   repoPath: string,
   onMessage?: (text: string) => void,
+  integrations?: AgentIntegrations,
 ): Promise<TaskResult> {
   const start = Date.now();
   const model = task.model ?? plan.model ?? DEFAULT_MODEL;
@@ -79,9 +88,10 @@ export async function runTask(
         cwd: repoPath,
         model,
         systemPrompt: { type: "preset", preset: "claude_code", append: sharedContext(plan) },
-        allowedTools: BUILD_TOOLS,
+        allowedTools: [...BUILD_TOOLS, ...(integrations?.extraAllowedTools ?? [])],
         permissionMode: "acceptEdits",
         maxTurns: 60,
+        ...(integrations?.mcpServers ? { mcpServers: integrations.mcpServers } : {}),
       },
     })) {
       // Surface the assistant's streamed text for live logs.

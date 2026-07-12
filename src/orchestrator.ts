@@ -3,7 +3,7 @@ import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { BuildPlan, Task, TaskResult } from "./types.js";
-import { runTask } from "./agent.js";
+import { runTask, type AgentIntegrations } from "./agent.js";
 
 const exec = promisify(execFile);
 
@@ -16,6 +16,8 @@ export interface OrchestratorOptions {
   dryRun?: boolean;
   /** Called whenever a task changes state, for logging. */
   onEvent?: (event: OrchestratorEvent) => void;
+  /** Integration hookups (MCP servers, extra tools) handed to every agent. */
+  integrations?: AgentIntegrations;
 }
 
 export type OrchestratorEvent =
@@ -154,7 +156,7 @@ export async function orchestrate(
               })
             : runTask(task, plan, opts.repoPath, (text) =>
                 opts.onEvent?.({ type: "task-log", task, text }),
-              );
+              opts.integrations);
 
           run
             .then(async (result) => {

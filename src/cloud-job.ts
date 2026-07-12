@@ -79,6 +79,51 @@ async function main() {
   const repoPath = join("/workspace", plan.name.replace(/[^\w.-]+/g, "-"));
   mkdirSync(repoPath, { recursive: true });
 
+  // 2c) INTEGRATIONS — the swarm's hands, credentialed from the Vault.
+  //     GHL rides in as an MCP server scoped to ONE sub-account (PIT +
+  //     Location ID); n8n/Vapi/GitHub keys land in the agents' environment.
+  //     All lookups are best-effort: a missing slot just means that hand
+  //     stays in the pocket for this run.
+  const { SecretManagerServiceClient } = await import("@google-cloud/secret-manager");
+  const sm = new SecretManagerServiceClient();
+  const secretVal = async (slotDocId: string): Promise<string | undefined> => {
+    try {
+      const meta = await db.collection("credentialRefs").doc(slotDocId).get();
+      if (!meta.exists || !meta.data()!.set) return undefined;
+      const [v] = await sm.accessSecretVersion({ name: `${meta.data()!.ref}/versions/latest` });
+      return v.payload?.data?.toString();
+    } catch { return undefined; }
+  };
+  const slotId = (s: string) => s.replace(/[^a-zA-Z0-9_-]+/g, "-");
+
+  const [ghlPit, ghlLocation, n8nKey, vapiKey, githubPat] = await Promise.all([
+    secretVal(slotId(`${projectDocId}/ghl-pit`)),
+    secretVal(slotId(`${projectDocId}/ghl-location`)),
+    secretVal("global-n8n"),
+    secretVal("global-vapi"),
+    secretVal("global-github"),
+  ]);
+  if (n8nKey) { process.env.N8N_API_KEY = n8nKey; process.env.N8N_BASE_URL = "https://automation.digitalsolomon.com"; }
+  if (vapiKey) process.env.VAPI_API_KEY = vapiKey;
+  if (githubPat) process.env.GITHUB_TOKEN = githubPat;
+
+  const integrations = ghlPit && ghlLocation
+    ? {
+        mcpServers: {
+          ghl: {
+            type: "http" as const,
+            url: "https://services.leadconnectorhq.com/mcp/",
+            headers: { Authorization: `Bearer ${ghlPit}`, locationId: ghlLocation },
+          },
+        },
+        extraAllowedTools: ["mcp__ghl__*"],
+      }
+    : undefined;
+  console.log(
+    `integrations: ghl-mcp=${integrations ? "on (one sub-account)" : "off"}, ` +
+    `n8n=${n8nKey ? "on" : "off"}, vapi=${vapiKey ? "on" : "off"}, github=${githubPat ? "on" : "off"}`,
+  );
+
   // 3) Execute, streaming every task transition into the run doc.
   const setTask = (id: string, patch: Record<string, unknown>) =>
     runDoc.set({ tasks: { [id]: patch } }, { merge: true }).catch(() => {});
@@ -87,6 +132,7 @@ async function main() {
     repoPath,
     concurrency: Number(process.env.CONCURRENCY ?? 2),
     dryRun,
+    integrations,
     onEvent: (e) => {
       switch (e.type) {
         case "task-start":
