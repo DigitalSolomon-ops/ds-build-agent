@@ -1,0 +1,9 @@
+# Build the solomon-runner job image. Submitted by the-creator/infra/06.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.job", "-t", "${_IMAGE}", "."]
+images: ["${_IMAGE}"]
+substitutions:
+  _IMAGE: ""
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -1,0 +1,14 @@
+# solomon-runner — ds-build-agent as a Cloud Run Job for The Creator.
+# Build context = this repo. git is required for commit_after_each_task.
+FROM node:24-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci
+COPY src ./src
+RUN npx tsc
+ENV NODE_ENV=production
+# /workspace is the ephemeral build area for the plan's app repo.
+RUN mkdir -p /workspace
+CMD ["node", "dist/cloud-job.js"]
