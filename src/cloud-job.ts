@@ -70,10 +70,12 @@ async function main() {
   const projectDoc = db.collection("projects").doc(projectDocId);
   const stamp = () => Date.now();
 
+  // merge: keep estCostUsd + executionName the launcher (creator-solomon)
+  // already stamped for guardrails accounting + the kill switch.
   await runDoc.set({
     runId, projectId: projectDocId, planUri, dryRun,
     modelOverride: override, status: "running", startedAt: stamp(), tasks: {},
-  });
+  }, { merge: true });
   await projectDoc.update({ state: "running", updatedAt: stamp() });
 
   const repoPath = join("/workspace", plan.name.replace(/[^\w.-]+/g, "-"));
