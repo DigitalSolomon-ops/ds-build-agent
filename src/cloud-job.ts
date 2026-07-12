@@ -51,6 +51,21 @@ async function main() {
     for (const t of plan.tasks) t.model = undefined; // override beats per-task routing
   }
 
+  // 2b) RESUME SEMANTICS: human/ghl tasks the operator already checked off in
+  // Status are SATISFIED — remove them from the plan (and from deps) so they
+  // don't re-defer, and so a done phase-6 sign-off lets the launch gate open.
+  const doneSnap = await db.collection("humanTasks")
+    .where("projectId", "==", projectDocId).where("done", "==", true).get();
+  const satisfied = new Set(
+    doneSnap.docs.map((d) => d.data().blocksTaskId as string | undefined).filter(Boolean),
+  );
+  if (satisfied.size) {
+    plan.tasks = plan.tasks
+      .filter((t) => !(satisfied.has(t.id) && t.executor !== "agent"))
+      .map((t) => ({ ...t, deps: (t.deps ?? []).filter((d) => !satisfied.has(d)) }));
+    console.log(`resume: ${satisfied.size} human task(s) already done -> satisfied`);
+  }
+
   const runDoc = db.collection("runs").doc(runId);
   const projectDoc = db.collection("projects").doc(projectDocId);
   const stamp = () => Date.now();
@@ -111,6 +126,28 @@ async function main() {
   const deferred = results.filter((r) => r.status === "deferred").length;
   const skipped = results.filter((r) => r.status === "skipped").length;
   const state = failed > 0 ? "stuck" : deferred + skipped > 0 ? "waiting" : "complete";
+
+  // 4b) Preserve the build: tar the workspace to GCS so Delivered has real
+  // artifacts (the job container is ephemeral). Best effort — a failed upload
+  // must not turn a finished run into a stuck one.
+  if (!dryRun && results.some((r) => r.status === "success")) {
+    try {
+      const { execFileSync } = await import("node:child_process");
+      const tarPath = `/tmp/${runId}.tar.gz`;
+      execFileSync("tar", ["-czf", tarPath, "-C", repoPath, "."]);
+      const artifact = `deliverables/${projectDocId}/${runId}-workspace.tar.gz`;
+      const bucket = process.env.CREATOR_BUCKET ?? `${env("GCP_PROJECT_ID")}-creator`;
+      await storage.bucket(bucket).upload(tarPath, { destination: artifact });
+      await db.collection("deliverables").doc(projectDocId).set({
+        projectId: projectDocId,
+        completedAt: stamp(),
+        artifactUris: [`gs://${bucket}/${artifact}`],
+      }, { merge: true });
+      console.log(`workspace preserved: gs://${bucket}/${artifact}`);
+    } catch (e) {
+      console.error("workspace preservation failed (non-fatal):", e);
+    }
+  }
 
   await runDoc.set({ status: "finished", finishedAt: stamp(), failed, deferred, skipped }, { merge: true });
   await projectDoc.update({ state: dryRun ? "drafted" : state, updatedAt: stamp() });

@@ -1,0 +1,346 @@
+# ============================================================================
+# Build plan: Connect Claude Code to GoHighLevel via MCP (single sub-account)
+#
+# Adapted from the reference plan (ghl-mcp-connection.plan.yaml in Downloads) to
+# THIS harness's real schema (src/types.ts + src/parser.ts). What changed and why:
+#
+#   Reference field        ->  This harness's field
+#   -----------------------    -----------------------------------------------
+#   plan: { ... } wrapper  ->  flat top-level (parser reads `name`/`tasks` flat)
+#   phases: [ ... ] block  ->  per-task `phase:` string (no separate phases list)
+#   defaults: { ... }      ->  plan-level `model:` + `deploy_policy:`
+#   task.executor          ->  same (agent | human | ghl)   [unchanged]
+#   task.depends_on        ->  task.deps
+#   task.output (singular) ->  task.outputs (plural, list)
+#   task.inputs            ->  folded into `brief` prose (no `inputs` field exists)
+#   task.acceptance        ->  same   [unchanged]
+#   model: claude-haiku-4-5->  model: haiku   (harness passes the alias straight
+#                              to the Agent SDK; README documents opus|sonnet|haiku)
+#
+# GATE MAPPING — the important reconciliation:
+#   The reference marks gate:true on the credentials and connect phases. This
+#   harness has exactly ONE launch gate and it is HARDCODED: the presence of
+#   `deploy_policy.launch_gate` binds gate-phase prefix "6" -> gated-phase prefix
+#   "7" (parser.ts:120-121). A human/ghl task sitting in phase "6" holds every
+#   phase-"7" task until a human clears it by hand (orchestrator.ts:64-69).
+#
+#   So supervision is expressed two ways here, and BOTH reference gates are honored:
+#     1. Every credentials/connect/authenticate/verify task is executor human|ghl,
+#        so the harness auto-DEFERS it to a handoff doc (BLOCKERS.md / GHL-SETUP.md)
+#        and a human performs it. That IS the "human approves before connecting"
+#        gate — no agent ever creates a token, stores a secret, or signs in.
+#     2. The launch gate (below) additionally HARD-BLOCKS the downstream agent
+#        deliverables (verification record, guardrails, permissions) so they can
+#        never be emitted before a human has actually connected + verified. In an
+#        autonomous run those phase-"7" tasks are SKIPPED "awaiting human sign-off."
+#
+#   Net effect: building the docs is automated (phase 0); connecting is supervised
+#   (phases 1-2, deferred to a human); the "it works / here's the handoff" agent
+#   deliverables (phase 7) only run after the human verification sign-off (phase 6).
+#
+# CONCURRENCY: the reference asks for concurrency 1. That is a run-time CLI flag
+# (--concurrency 1), not a plan field the parser reads, so it cannot live here.
+# Launch this plan with:  node dist/index.js plans/ghl-mcp-connection.plan.yaml \
+#                           --out C:\Users\marcu\ds-builds --concurrency 1 --dry-run
+# (drop --dry-run and set ANTHROPIC_API_KEY to actually build the phase-0 docs.)
+# ============================================================================
+
+name: ghl-mcp-connection
+description: >
+  Stand up a direct Claude Code -> GoHighLevel MCP connection for ONE
+  sub-account (location). OAuth is the primary path (no token to store); a
+  Private Integration Token (PIT) path is documented as fallback. Secret
+  creation, token storage, and OAuth sign-in are HUMAN-gated by design and are
+  never routed to an agent executor.
+
+# Injected verbatim into every agent's context (agent.ts:sharedContext).
+stack:
+  - "Client: Claude Code (the CLI), connecting out over MCP (transport: http)."
+  - "Server: GoHighLevel MCP for a single location (sub-account)."
+  - "OAuth endpoint (primary): https://services.leadconnectorhq.com/mcp/anthropic/v2"
+  - "PIT endpoint (fallback):  https://services.leadconnectorhq.com/mcp/"
+  - "No application code is built here — this plan produces docs + config only."
+
+conventions:
+  - "Secrets never go in source or git. A PIT is a password; treat it like one."
+  - "No real token or location id in any committed file — use .env.example names"
+  - "  and reference the token only via ${GHL_PIT} env expansion."
+  - "Minimal-scope policy: request the fewest GHL scopes that work; never 'all'."
+  - "OAuth is the primary path (handled interactively via /mcp); PIT is fallback."
+  - "Access tokens are not the same thing as a PIT — do not conflate them in docs."
+
+# Plan-wide default model (per-task `model:` overrides it). Aliases: opus|sonnet|haiku.
+# Reference routing: haiku for scaffolding/short docs, sonnet for the longer guides.
+model: haiku
+
+deploy_policy:
+  worker_defaults:
+    # Commit after each successful agent task so every phase-0 doc is a rollback point.
+    commit_after_each_task: true
+  # PRESENCE of this key engages the harness's 6 -> 7 launch gate (parser.ts:120).
+  # The sub-keys below are documentation for humans; the parser only checks that
+  # `launch_gate` exists. The gate is bound to phase prefixes "6" and "7".
+  launch_gate:
+    gate_phase: "6-verify-signoff"   # human sign-off lives here; holds the gate shut
+    gated_phase: "7-handoff"         # agent deliverables wait behind it
+    note: >
+      Autonomous runs will SKIP the phase-7 deliverables and report
+      "launch gate closed — awaiting human compliance sign-off." That is intended:
+      a human completes the live connection + read-only verification, records the
+      sign-off, then re-runs (e.g. --only write-verification-record,write-guardrails,
+      note-tool-permissions) to emit the handoff docs.
+
+tasks:
+
+  # ---------------- PHASE 0 — agent-buildable scaffolding ----------------
+  - id: scaffold-build-folder
+    title: Scaffold build folder + docs
+    phase: 0-scaffold
+    executor: agent
+    model: haiku
+    brief: >
+      Create the scaffolding for this connection project in the current build
+      folder: a README.md describing the project scope, and an empty docs/
+      subfolder for the guides later tasks will write. The README must state that
+      this is a connection for a SINGLE GoHighLevel sub-account (one location),
+      NOT an agency-wide or multi-location integration.
+    outputs:
+      - README.md
+      - docs/
+    acceptance:
+      - "Build folder contains a README describing the project scope."
+      - "README states this is a single-sub-account connection, not agency-wide."
+
+  - id: write-claude-md
+    title: Write CLAUDE.md (project guardrails)
+    phase: 0-scaffold
+    executor: agent
+    model: sonnet
+    deps: [scaffold-build-folder]
+    brief: >
+      Write a CLAUDE.md at the build-folder root capturing the project
+      conventions for anyone (human or agent) who opens this folder later. It must
+      make the credential and safety posture unmistakable.
+    outputs:
+      - CLAUDE.md
+    acceptance:
+      - "CLAUDE.md states secrets never go in source or git (a PIT is a password)."
+      - "CLAUDE.md lists the minimal-scope policy and the kill switch."
+      - "CLAUDE.md notes access tokens differ from a PIT; OAuth is handled via /mcp."
+
+  - id: write-env-example
+    title: Write .env.example + confirm .gitignore
+    phase: 0-scaffold
+    executor: agent
+    model: haiku
+    deps: [scaffold-build-folder]
+    brief: >
+      Create a .env.example listing ONLY the credential variable NAMES needed for
+      the PIT fallback path — GHL_PIT= and GHL_LOCATION_ID= — with NO values after
+      the '='. Then ensure .gitignore ignores .env: check whether a .gitignore
+      exists and already ignores .env before appending, so you do not create a
+      duplicate entry. Do not put any real token or location id anywhere.
+    outputs:
+      - .env.example
+      - .gitignore
+    acceptance:
+      - ".env.example contains GHL_PIT= and GHL_LOCATION_ID= with NO values."
+      - ".gitignore ignores .env (verified present, not just appended blindly)."
+      - "No real token or location id appears anywhere in the folder."
+
+  - id: write-connection-guide
+    title: Write docs/CONNECTION.md (both paths)
+    phase: 0-scaffold
+    executor: agent
+    model: sonnet
+    deps: [scaffold-build-folder]
+    brief: >
+      Write docs/CONNECTION.md documenting BOTH connection paths with exact,
+      copy-pasteable commands.
+      OAuth (PRIMARY): endpoint https://services.leadconnectorhq.com/mcp/anthropic/v2 ;
+      register with `claude mcp add --transport http ghl <v2 endpoint>` then sign in
+      interactively with /mcp (sign in -> pick the location -> approve).
+      PIT (FALLBACK): endpoint https://services.leadconnectorhq.com/mcp/ ; register
+      with the flag order name and URL FIRST, --header LAST, e.g.
+      `claude mcp add --transport http ghl https://services.leadconnectorhq.com/mcp/ --header "Authorization: Bearer ${GHL_PIT}" --header "locationId: <id>"`.
+      Show the token supplied via ${GHL_PIT} env expansion so it stays out of any
+      committed config. Never print a literal token in the doc.
+    outputs:
+      - docs/CONNECTION.md
+    acceptance:
+      - "OAuth path documented as primary (claude mcp add + /mcp sign-in)."
+      - "PIT path documented as fallback with correct flag order (name/URL first, --header last)."
+      - "Env-var expansion (${GHL_PIT}) shown so the token stays out of committed config."
+
+  # ------------- PHASE 1 — human/ghl prerequisites (human-gated) -------------
+  # Every task here is executor human|ghl -> auto-deferred to a handoff doc.
+  # This is the reference's "approve before connecting" gate, expressed as routing.
+  - id: choose-subaccount
+    title: Choose the target sub-account
+    phase: 1-credentials
+    executor: human
+    deps: [write-claude-md, write-connection-guide]
+    brief: >
+      Decide which single GoHighLevel sub-account (location) this connection will
+      target, from the list of candidate sub-accounts. Write the decision down.
+      This gates everything downstream: exactly one location, chosen deliberately.
+    outputs:
+      - "Decision record — which location this connection targets."
+    acceptance:
+      - "Exactly one sub-account (location) is chosen and written down."
+
+  - id: create-pit
+    title: Create the Private Integration Token (PIT path only)
+    phase: 1-credentials
+    executor: ghl
+    deps: [choose-subaccount]
+    brief: >
+      In GoHighLevel (Settings > Private Integrations) for the chosen sub-account,
+      create a Private Integration Token with MINIMAL scopes only — the fewest that
+      let the intended read/work happen. Do NOT grant "all permissions" and do NOT
+      grant destructive scopes (e.g. delete users). Copy the token to a secure
+      location at creation time; GHL shows it only once. Only needed on the PIT
+      fallback path — skip entirely if using OAuth.
+    outputs:
+      - "Private Integration Token created in GHL (stored securely, NOT in git)."
+    acceptance:
+      - "PIT created with minimal scopes only (NOT 'all permissions')."
+      - "Token copied to a secure location at creation (shown only once)."
+      - "Destructive scopes (e.g. delete users) explicitly NOT granted."
+
+  - id: capture-location-id
+    title: Capture the Location ID
+    phase: 1-credentials
+    executor: ghl
+    deps: [choose-subaccount]
+    brief: >
+      In GoHighLevel (Settings > Business Profile) for the chosen sub-account, copy
+      the Location ID. Record it alongside the credential-handling notes — never in
+      git. It is passed as the `locationId` header on the PIT path and selected
+      during /mcp sign-in on the OAuth path.
+    outputs:
+      - "Location ID captured (kept out of git)."
+    acceptance:
+      - "Location ID recorded alongside credential handling notes (not in git)."
+
+  - id: store-secret
+    title: Store the PIT as an env var (PIT path only)
+    phase: 1-credentials
+    executor: human
+    deps: [create-pit]
+    brief: >
+      Store the PIT as a Windows environment variable via `setx GHL_PIT "<token>"`,
+      then restart the terminal so the variable is live. Do NOT write the token into
+      any file in the repo. On the OAuth path this task can be skipped entirely.
+    outputs:
+      - "PIT stored as a Windows environment variable (setx), not in any file."
+    acceptance:
+      - "PIT set as env var (setx) and terminal restarted; not written to any file."
+      - "OAuth path may skip this task entirely."
+
+  # ---------- PHASE 2 — human connect + authenticate (human-gated) ----------
+  - id: add-mcp-server
+    title: Register the ghl MCP server
+    phase: 2-connect
+    executor: human
+    deps: [capture-location-id]
+    brief: >
+      Using the commands in docs/CONNECTION.md, register the MCP server named "ghl"
+      in Claude Code.
+      PRIMARY (OAuth): `claude mcp add --transport http ghl <v2 endpoint>`.
+      FALLBACK (PIT): pass headers via ${GHL_PIT} env expansion, never a literal
+      token. Then confirm with `claude mcp list` that the ghl server is registered.
+    outputs:
+      - "MCP server 'ghl' registered in Claude Code."
+    acceptance:
+      - "Primary (OAuth): `claude mcp add --transport http ghl <v2 endpoint>` run."
+      - "Fallback (PIT): headers passed via ${GHL_PIT} expansion, not a literal token."
+      - "`claude mcp list` shows the ghl server registered."
+
+  - id: authenticate
+    title: Authenticate (OAuth sign-in) to the chosen location
+    phase: 2-connect
+    executor: human
+    deps: [add-mcp-server]
+    brief: >
+      Complete the interactive OAuth sign-in — this cannot be automated. Run /mcp,
+      sign in, pick the chosen sub-account (location), and approve. Confirm the
+      resulting connection is scoped to exactly the intended sub-account.
+    outputs:
+      - "Authenticated connection scoped to the chosen location."
+    acceptance:
+      - "OAuth: /mcp completed (sign in -> pick location -> approve)."
+      - "Connection is scoped to exactly the intended sub-account."
+
+  # ---------------- PHASE 6 — human verification (THE LAUNCH GATE) ----------
+  # A human task in phase "6" holds the phase-"7" deliverables shut until sign-off.
+  - id: verify-connection
+    title: Verify the connection (read-only) — sign-off gate
+    phase: 6-verify-signoff
+    executor: human
+    deps: [authenticate]
+    brief: >
+      Against the live connection, confirm the ghl tools resolve and a read works,
+      using a safe read-only test prompt only. Run /mcp and confirm the ghl tools
+      are listed, then make one read-only call (e.g. fetch 3 contacts) and confirm
+      NO write occurs. Recording this sign-off is what clears the launch gate so the
+      phase-7 handoff deliverables may be produced.
+    outputs:
+      - "Confirmation that tools resolve and a read-only call works (no writes)."
+    acceptance:
+      - "/mcp lists the ghl tools."
+      - "A read-only call succeeds (e.g. fetch 3 contacts) with no writes."
+
+  # ------------- PHASE 7 — agent handoff deliverables (GATED) -------------
+  # Held behind the phase-6 sign-off. Skipped in autonomous runs until cleared.
+  - id: write-verification-record
+    title: Write docs/VERIFICATION.md
+    phase: 7-handoff
+    executor: agent
+    model: haiku
+    deps: [verify-connection]
+    brief: >
+      Record the verification outcome in docs/VERIFICATION.md: what was tested, the
+      exact safe read-only test-prompt set that was used, and the result. Do not
+      invent a result — write from the sign-off recorded on verify-connection.
+    outputs:
+      - docs/VERIFICATION.md
+    acceptance:
+      - "Records what was tested, the safe test-prompt set, and the outcome."
+
+  - id: write-guardrails
+    title: Write docs/GUARDRAILS.md
+    phase: 7-handoff
+    executor: agent
+    model: sonnet
+    deps: [write-verification-record]
+    brief: >
+      Write docs/GUARDRAILS.md documenting the ongoing safety posture: PIT rotation
+      cadence (~90 days) and an "expire now" step for a suspected compromise; the
+      kill switch (`claude mcp remove ghl`, plus revoke the PIT in GHL); and that
+      this is ONE connection per sub-account — additional sub-accounts are added as
+      separate connections, not by widening this one.
+    outputs:
+      - docs/GUARDRAILS.md
+    acceptance:
+      - "Documents PIT rotation cadence (~90 days) and 'expire now' for compromise."
+      - "Documents the kill switch (`claude mcp remove ghl`; revoke PIT in GHL)."
+      - "Documents that this is one connection per sub-account; add more separately."
+
+  - id: note-tool-permissions
+    title: Write docs/PERMISSIONS.md (recommendation only)
+    phase: 7-handoff
+    executor: agent
+    model: sonnet
+    deps: [write-verification-record]
+    brief: >
+      Write docs/PERMISSIONS.md recommending a tool-permission posture for the ghl
+      MCP server in Claude Code settings. Recommend pre-approving READ tools only,
+      while write/delete tools always prompt. Make explicit that ENABLING any
+      auto-approval is a human decision — this doc is a recommendation, not an
+      action an agent should take.
+    outputs:
+      - docs/PERMISSIONS.md
+    acceptance:
+      - "Recommends pre-approving READ tools only; write/delete tools always prompt."
+      - "Explicitly flags that enabling auto-approval is a human decision, not agent."

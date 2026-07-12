@@ -1,0 +1,9 @@
+node_modules
+dist
+builds
+.git
+.env
+dashboard/baseline
+dashboard/verify-screenshot.png
+dashboard/verify-ui.mjs
+*.cmd

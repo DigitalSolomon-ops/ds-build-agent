@@ -33,8 +33,12 @@ export const PLANS_ROOT = process.env.DS_PLANS_ROOT
   ? resolve(process.env.DS_PLANS_ROOT)
   : resolve(HARNESS_ROOT, "..", "ds-plans");
 
-/** Loopback only. Never bind 0.0.0.0 or a LAN address — this can spawn processes. */
-export const HOST = "127.0.0.1";
+/**
+ * Loopback only by default — this can spawn processes. DS_DASHBOARD_HOST exists
+ * solely for the containerized deployment, where the bind is still unreachable
+ * from the internet (internal Docker network; Caddy basic_auth is the gate).
+ */
+export const HOST = process.env.DS_DASHBOARD_HOST ?? "127.0.0.1";
 export const PORT = Number(process.env.DS_DASHBOARD_PORT ?? "4317");
 
 /** Concurrency bounds accepted from the UI. */
