@@ -40,6 +40,13 @@ async function main() {
   const override = env("MODEL_OVERRIDE", "plan");
   const dryRun = env("DRY_RUN", "false") === "true";
 
+  // Structured stdout for Cloud Logging (B3): one JSON object per line carrying
+  // `severity` + `message` (+ runId, and taskId where relevant) so entries parse
+  // into queryable fields instead of opaque text. This is stdout ONLY —
+  // events.ndjson and run-state.json are the audit trail and stay untouched.
+  const log = (severity: "INFO" | "WARNING" | "ERROR", message: string, extra: Record<string, unknown> = {}) =>
+    process.stdout.write(JSON.stringify({ severity, message, runId, ...extra }) + "\n");
+
   // 1) Fetch + validate the plan.
   const m = /^gs:\/\/([^/]+)\/(.+)$/.exec(planUri);
   if (!m) throw new Error(`PLAN_URI is not a gs:// URI: ${planUri}`);
@@ -51,6 +58,18 @@ async function main() {
     plan.model = override;
     for (const t of plan.tasks) t.model = undefined; // override beats per-task routing
   }
+
+  // Per-run cost brake (B2). A plan may override the runner default; the default
+  // is the MAX_RUN_USD env set on the Job, or a built-in floor. NEVER "no cap".
+  // `spentUsd` is an in-process accumulator summed from task-done usage as it
+  // lands — it is DELIBERATELY never written to runs/{id}.costUsd mid-run (that
+  // rollup stays end-of-run and non-incremental; see §4c).
+  const DEFAULT_RUN_CAP_USD = 25;
+  const envCap = Number(process.env.MAX_RUN_USD);
+  const runCapUsd = plan.policy.maxRunUsd
+    ?? (Number.isFinite(envCap) && envCap > 0 ? envCap : DEFAULT_RUN_CAP_USD);
+  let spentUsd = 0;
+  let cappedOut = false;
 
   // 2b) RESUME SEMANTICS: human/ghl tasks the operator already checked off in
   // Status are SATISFIED — remove them from the plan (and from deps) so they
@@ -64,7 +83,7 @@ async function main() {
     plan.tasks = plan.tasks
       .filter((t) => !(satisfied.has(t.id) && t.executor !== "agent"))
       .map((t) => ({ ...t, deps: (t.deps ?? []).filter((d) => !satisfied.has(d)) }));
-    console.log(`resume: ${satisfied.size} human task(s) already done -> satisfied`);
+    log("INFO", `resume: ${satisfied.size} human task(s) already done -> satisfied`);
   }
 
   const runDoc = db.collection("runs").doc(runId);
@@ -116,7 +135,7 @@ async function main() {
         attachmentNames.push(leaf);
       }
     } catch (e) {
-      console.error("operator attachment download failed (non-fatal):", e);
+      log("WARNING", "operator attachment download failed (non-fatal)", { error: String(e) });
     }
 
     // Thread both into every agent's context. Extending BuildPlan (rather than
@@ -126,9 +145,9 @@ async function main() {
     // and the CLI path never sets operatorContext, so it stays a no-op there.
     const ctx = buildOperatorContext(answers, attachmentNames);
     if (ctx) plan.operatorContext = ctx;
-    console.log(`operator write-back: ${answers.length} answer(s), ${attachmentNames.length} attachment(s)`);
+    log("INFO", `operator write-back: ${answers.length} answer(s), ${attachmentNames.length} attachment(s)`);
   } catch (e) {
-    console.error("operator write-back materialisation failed (non-fatal):", e);
+    log("WARNING", "operator write-back materialisation failed (non-fatal)", { error: String(e) });
   }
 
   // 2c) INTEGRATIONS — the swarm's hands, credentialed from the Vault.
@@ -171,7 +190,7 @@ async function main() {
         extraAllowedTools: ["mcp__ghl__*"],
       }
     : undefined;
-  console.log(
+  log("INFO",
     `integrations: ghl-mcp=${integrations ? "on (one sub-account)" : "off"}, ` +
     `n8n=${n8nKey ? "on" : "off"}, vapi=${vapiKey ? "on" : "off"}, github=${githubPat ? "on" : "off"}`,
   );
@@ -185,10 +204,19 @@ async function main() {
     concurrency: Number(process.env.CONCURRENCY ?? 2),
     dryRun,
     integrations,
+    // B2: stop dispatching once accumulated reported cost reaches the cap.
+    capReached: () => {
+      const over = spentUsd >= runCapUsd;
+      if (over) cappedOut = true;
+      return over;
+    },
     onEvent: (e) => {
+      // Accumulate reported cost as it lands (tasks with no usage add nothing).
+      if (e.type === "task-done" && e.result.usage) spentUsd += e.result.usage.costUsd;
       switch (e.type) {
         case "task-start":
           setTask(e.task.id, { status: "running", executor: e.task.executor, model: e.task.model ?? plan.model ?? "sonnet", startedAt: stamp() });
+          log("INFO", `task start: ${e.task.id}`, { taskId: e.task.id });
           break;
         case "task-log":
           setTask(e.task.id, { lastLog: e.text.slice(0, 500), logAt: stamp() });
@@ -207,6 +235,9 @@ async function main() {
             tokensOut: e.result.usage?.outputTokens,
             turns: e.result.usage?.turns,
           });
+          log(e.result.status === "failed" ? "WARNING" : "INFO",
+            `task done: ${e.task.id} -> ${e.result.status}`,
+            { taskId: e.task.id, status: e.result.status, costUsd: e.result.usage?.costUsd, spentUsd });
           break;
         case "task-deferred": {
           setTask(e.task.id, { status: "deferred", executor: e.task.executor, doc: e.doc });
@@ -226,6 +257,7 @@ async function main() {
         }
         case "task-skipped":
           setTask(e.task.id, { status: "skipped", error: e.reason });
+          log("WARNING", `task skipped: ${e.task.id} — ${e.reason}`, { taskId: e.task.id });
           break;
       }
     },
@@ -235,7 +267,9 @@ async function main() {
   const failed = results.filter((r) => r.status === "failed").length;
   const deferred = results.filter((r) => r.status === "deferred").length;
   const skipped = results.filter((r) => r.status === "skipped").length;
-  const state = failed > 0 ? "stuck" : deferred + skipped > 0 ? "waiting" : "complete";
+  // A cost-cap termination is "stuck" (needs the operator), never "waiting" —
+  // even though the halted tasks come back as skipped.
+  const state = cappedOut || failed > 0 ? "stuck" : deferred + skipped > 0 ? "waiting" : "complete";
 
   // 4b) Preserve the build: tar the workspace to GCS so Delivered has real
   // artifacts (the job container is ephemeral). Best effort — a failed upload
@@ -253,9 +287,9 @@ async function main() {
         completedAt: stamp(),
         artifactUris: [`gs://${bucket}/${artifact}`],
       }, { merge: true });
-      console.log(`workspace preserved: gs://${bucket}/${artifact}`);
+      log("INFO", `workspace preserved: gs://${bucket}/${artifact}`);
     } catch (e) {
-      console.error("workspace preservation failed (non-fatal):", e);
+      log("WARNING", "workspace preservation failed (non-fatal)", { error: String(e) });
     }
   }
 
@@ -276,21 +310,30 @@ async function main() {
       }
     : {};
 
+  // On a cap termination, record a clear reason plus the run cap and the actual
+  // in-process spend under a DISTINCT field name — never overwriting costUsd,
+  // which the §4c rollup owns. runSpendUsd is the accumulator's final value.
+  const capFields = cappedOut
+    ? { terminatedReason: "cost-cap", runCapUsd, runSpendUsd: Math.round(spentUsd * 1e4) / 1e4 }
+    : {};
   await runDoc.set(
-    { status: "finished", finishedAt: stamp(), failed, deferred, skipped, ...usageRollup },
+    { status: "finished", finishedAt: stamp(), failed, deferred, skipped, ...usageRollup, ...capFields },
     { merge: true },
   );
   await projectDoc.update({ state: dryRun ? "drafted" : state, updatedAt: stamp() });
-  console.log(
-    `run ${runId}: ${state} (built ${results.filter((r) => r.status === "success").length}, ` +
-    `deferred ${deferred}, skipped ${skipped}, failed ${failed})` +
-    (reported.length ? ` cost $${usageRollup.costUsd} over ${reported.length} task(s)` : ` cost not reported`),
-  );
-  process.exit(failed > 0 ? 1 : 0);
+  const built = results.filter((r) => r.status === "success").length;
+  log(cappedOut || failed > 0 ? "WARNING" : "INFO",
+    `run ${state}: built ${built}, deferred ${deferred}, skipped ${skipped}, failed ${failed}` +
+    (cappedOut ? ` — TERMINATED on cost cap ($${Math.round(spentUsd * 1e4) / 1e4} >= $${runCapUsd})` : "") +
+    (reported.length ? ` — cost $${usageRollup.costUsd} over ${reported.length} task(s)` : " — cost not reported"),
+    { state, built, deferred, skipped, failed, cappedOut, runCapUsd, spentUsd: Math.round(spentUsd * 1e4) / 1e4 });
+  process.exit(cappedOut || failed > 0 ? 1 : 0);
 }
 
 main().catch(async (e) => {
-  console.error("cloud-job fatal:", e);
+  process.stdout.write(JSON.stringify({
+    severity: "ERROR", message: "cloud-job fatal", error: String(e), runId: process.env.RUN_ID,
+  }) + "\n");
   try {
     await db.collection("runs").doc(env("RUN_ID")).set({ status: "finished", error: String(e), finishedAt: Date.now() }, { merge: true });
     await db.collection("projects").doc(env("PROJECT_DOC_ID")).update({ state: "stuck", updatedAt: Date.now() });
