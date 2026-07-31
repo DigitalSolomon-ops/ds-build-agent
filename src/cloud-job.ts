@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { validatePlan } from "./parser.js";
 import { orchestrate } from "./orchestrator.js";
+import { writeOperatorAnswers, buildOperatorContext, type OperatorAnswer } from "./operator-writeback.js";
 import type { TaskResult } from "./types.js";
 
 const env = (k: string, fallback?: string): string => {
@@ -80,6 +81,55 @@ async function main() {
 
   const repoPath = join("/workspace", plan.name.replace(/[^\w.-]+/g, "-"));
   mkdirSync(repoPath, { recursive: true });
+
+  // 2d) OPERATOR WRITE-BACK materialisation. Answers live on humanTasks docs and
+  //     attachments in Cloud Storage — both OUTSIDE this ephemeral container.
+  //     Materialise them into the fresh workspace and into every agent's shared
+  //     context BEFORE the first task dispatches (below), so a resume run sees the
+  //     operator's answers without being told to look in BLOCKERS.md. Best-effort:
+  //     a failure here must not turn a runnable plan into a stuck run.
+  try {
+    const ansSnap = await db.collection("humanTasks").where("projectId", "==", projectDocId).get();
+    const answers: OperatorAnswer[] = ansSnap.docs
+      .map((d) => d.data())
+      .filter((t) => typeof t.answer === "string" && (t.answer as string).trim())
+      .map((t) => ({
+        title: String(t.title ?? t.blocksTaskId ?? "blocker"),
+        source: t.source === "GHL-SETUP.md" ? "GHL-SETUP.md" : "BLOCKERS.md",
+        answer: String(t.answer),
+        answeredBy: t.answeredBy ? String(t.answeredBy) : undefined,
+      }));
+    if (answers.length) writeOperatorAnswers(repoPath, answers, new Date().toISOString());
+
+    // Attachments: own try so a missing bucket cannot lose the answers above.
+    const attachmentNames: string[] = [];
+    try {
+      const inBucket = process.env.CREATOR_BUCKET ?? `${env("GCP_PROJECT_ID")}-creator`;
+      const prefix = `project-inputs/${projectDocId}/`;
+      const [files] = await storage.bucket(inBucket).getFiles({ prefix });
+      const inputsDir = join(repoPath, "inputs");
+      for (const f of files) {
+        const leaf = f.name.slice(prefix.length);
+        if (!leaf || f.name.endsWith("/")) continue;
+        mkdirSync(inputsDir, { recursive: true });
+        await f.download({ destination: join(inputsDir, leaf) });
+        attachmentNames.push(leaf);
+      }
+    } catch (e) {
+      console.error("operator attachment download failed (non-fatal):", e);
+    }
+
+    // Thread both into every agent's context. Extending BuildPlan (rather than
+    // threading a new parameter through orchestrate -> runTask) keeps the whole
+    // change to cloud-job + one guarded append in agent.ts's sharedContext:
+    // cloud-job already owns and mutates `plan` (it sets plan.model on override),
+    // and the CLI path never sets operatorContext, so it stays a no-op there.
+    const ctx = buildOperatorContext(answers, attachmentNames);
+    if (ctx) plan.operatorContext = ctx;
+    console.log(`operator write-back: ${answers.length} answer(s), ${attachmentNames.length} attachment(s)`);
+  } catch (e) {
+    console.error("operator write-back materialisation failed (non-fatal):", e);
+  }
 
   // 2c) INTEGRATIONS — the swarm's hands, credentialed from the Vault.
   //     GHL rides in as an MCP server scoped to ONE sub-account (PIT +
@@ -144,7 +194,19 @@ async function main() {
           setTask(e.task.id, { lastLog: e.text.slice(0, 500), logAt: stamp() });
           break;
         case "task-done":
-          setTask(e.task.id, { status: e.result.status, summary: e.result.summary?.slice(0, 1000), error: e.result.error, durationMs: e.result.durationMs });
+          // usage is undefined for anything no agent ran; Firestore is
+          // constructed with ignoreUndefinedProperties so those keys simply
+          // do not appear, which is what the cockpit reads as "unknown".
+          setTask(e.task.id, {
+            status: e.result.status,
+            summary: e.result.summary?.slice(0, 1000),
+            error: e.result.error,
+            durationMs: e.result.durationMs,
+            costUsd: e.result.usage?.costUsd,
+            tokensIn: e.result.usage?.inputTokens,
+            tokensOut: e.result.usage?.outputTokens,
+            turns: e.result.usage?.turns,
+          });
           break;
         case "task-deferred": {
           setTask(e.task.id, { status: "deferred", executor: e.task.executor, doc: e.doc });
@@ -197,9 +259,33 @@ async function main() {
     }
   }
 
-  await runDoc.set({ status: "finished", finishedAt: stamp(), failed, deferred, skipped }, { merge: true });
+  // 4c) Roll up what the run actually cost, so Status stops accounting the
+  // daily cap against the launch-time forecast.
+  //
+  // Only written when at least one task reported usage. A run with no
+  // telemetry must leave costUsd ABSENT, not 0 — spendToday() prefers an
+  // actual over the estimate, so a confident zero here would silently erase
+  // the run from the spend cap. Absent means unknown; zero means free.
+  const reported = results.filter((r) => r.usage);
+  const usageRollup = reported.length
+    ? {
+        costUsd: Math.round(reported.reduce((s, r) => s + r.usage!.costUsd, 0) * 1e4) / 1e4,
+        tokensIn: reported.reduce((s, r) => s + r.usage!.inputTokens, 0),
+        tokensOut: reported.reduce((s, r) => s + r.usage!.outputTokens, 0),
+        tasksReportingUsage: reported.length,
+      }
+    : {};
+
+  await runDoc.set(
+    { status: "finished", finishedAt: stamp(), failed, deferred, skipped, ...usageRollup },
+    { merge: true },
+  );
   await projectDoc.update({ state: dryRun ? "drafted" : state, updatedAt: stamp() });
-  console.log(`run ${runId}: ${state} (built ${results.filter((r) => r.status === "success").length}, deferred ${deferred}, skipped ${skipped}, failed ${failed})`);
+  console.log(
+    `run ${runId}: ${state} (built ${results.filter((r) => r.status === "success").length}, ` +
+    `deferred ${deferred}, skipped ${skipped}, failed ${failed})` +
+    (reported.length ? ` cost $${usageRollup.costUsd} over ${reported.length} task(s)` : ` cost not reported`),
+  );
   process.exit(failed > 0 ? 1 : 0);
 }
 

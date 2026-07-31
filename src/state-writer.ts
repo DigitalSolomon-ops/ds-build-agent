@@ -50,6 +50,18 @@ interface TaskView {
   durationMs?: number;
   /** Handoff doc a deferred task was recorded to (BLOCKERS.md / GHL-SETUP.md). */
   doc?: string;
+  /** What this task cost. Absent = no agent ran, or the SDK reported nothing. */
+  costUsd?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  turns?: number;
+}
+
+/** Sum a usage field across tasks, skipping absent values.
+ *  Returns undefined when NOTHING reported — absent is not zero. */
+function sumReported(views: TaskView[], pick: (v: TaskView) => number | undefined): number | undefined {
+  const values = views.map(pick).filter((n): n is number => typeof n === "number");
+  return values.length ? values.reduce((a, b) => a + b, 0) : undefined;
 }
 
 export interface StateWriterInit {
@@ -174,6 +186,15 @@ export function createStateWriter(init: StateWriterInit) {
       running: count("running"),
     };
     const terminal = all.filter((t) => TERMINAL.has(t.state)).length;
+    // Cost so far. Omitted entirely when no task has reported — the dashboard
+    // must be able to tell "nothing spent yet" from "we are not measuring".
+    const spendSoFar = sumReported(all, (t) => t.costUsd);
+    const spend = spendSoFar === undefined ? undefined : {
+      costUsd: Math.round(spendSoFar * 1e4) / 1e4,
+      tokensIn: sumReported(all, (t) => t.tokensIn) ?? 0,
+      tokensOut: sumReported(all, (t) => t.tokensOut) ?? 0,
+      tasksReportingUsage: all.filter((t) => typeof t.costUsd === "number").length,
+    };
 
     const phases = phaseOrder.map((phase) => {
       const inPhase = all.filter((t) => t.phase === phase);
@@ -220,6 +241,7 @@ export function createStateWriter(init: StateWriterInit) {
       activePhase,
       gate: gateView(),
       totals,
+      spend,
       progress: { percentComplete: all.length ? Math.round((terminal / all.length) * 100) : 0 },
       phases,
       tasks: all,
@@ -247,6 +269,12 @@ export function createStateWriter(init: StateWriterInit) {
           view.durationMs = e.result.durationMs;
           if (e.result.error) view.error = e.result.error;
           if (e.result.summary) view.summary = e.result.summary;
+          if (e.result.usage) {
+            view.costUsd = e.result.usage.costUsd;
+            view.tokensIn = e.result.usage.inputTokens;
+            view.tokensOut = e.result.usage.outputTokens;
+            view.turns = e.result.usage.turns;
+          }
         }
         appendEvent({
           type: e.type,
@@ -255,6 +283,10 @@ export function createStateWriter(init: StateWriterInit) {
           durationMs: e.result.durationMs,
           error: e.result.error,
           summary: e.result.summary,
+          costUsd: e.result.usage?.costUsd,
+          tokensIn: e.result.usage?.inputTokens,
+          tokensOut: e.result.usage?.outputTokens,
+          turns: e.result.usage?.turns,
         });
         break;
       case "task-deferred":
@@ -284,10 +316,17 @@ export function createStateWriter(init: StateWriterInit) {
       view.durationMs = r.durationMs;
       if (r.error) view.error = r.error;
       if (r.summary) view.summary = r.summary;
+      if (r.usage) {
+        view.costUsd = r.usage.costUsd;
+        view.tokensIn = r.usage.inputTokens;
+        view.tokensOut = r.usage.outputTokens;
+        view.turns = r.usage.turns;
+      }
     }
     runningIds.clear();
     activePhase = null;
     const count = (s: TaskResult["status"]) => results.filter((r) => r.status === s).length;
+    const reported = results.filter((r) => r.usage);
     appendEvent({
       type: "run-end",
       totals: {
@@ -296,6 +335,15 @@ export function createStateWriter(init: StateWriterInit) {
         skipped: count("skipped"),
         failed: count("failed"),
       },
+      // Absent when nothing reported — see sumReported().
+      spend: reported.length
+        ? {
+            costUsd: Math.round(reported.reduce((s, r) => s + r.usage!.costUsd, 0) * 1e4) / 1e4,
+            tokensIn: reported.reduce((s, r) => s + r.usage!.inputTokens, 0),
+            tokensOut: reported.reduce((s, r) => s + r.usage!.outputTokens, 0),
+            tasksReportingUsage: reported.length,
+          }
+        : undefined,
     });
     snapshot("complete");
   }

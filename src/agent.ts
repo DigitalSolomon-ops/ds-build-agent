@@ -1,5 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { BuildPlan, Task, TaskResult } from "./types.js";
+import type { BuildPlan, Task, TaskResult, TaskUsage } from "./types.js";
 
 /** Tools each build agent is allowed to use without prompting. */
 const BUILD_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
@@ -12,7 +12,7 @@ const DEFAULT_MODEL = "sonnet";
  * built, the approved stack, and the house conventions. This keeps builds
  * consistent regardless of which task an agent picks up.
  */
-function sharedContext(plan: BuildPlan): string {
+export function sharedContext(plan: BuildPlan): string {
   const lines: string[] = [
     `You are building the application "${plan.name}".`,
   ];
@@ -32,6 +32,12 @@ function sharedContext(plan: BuildPlan): string {
     `  - When a real URL/id/credential is not yet available, use a clearly-named`,
     `    placeholder and note it, rather than inventing a value.`,
   );
+  // Operator write-back: answers to prior blockers + attached documents. The
+  // cloud runner assembles this from Firestore/Storage so an agent reads the
+  // operator's answer here rather than being told to open BLOCKERS.md.
+  if (plan.operatorContext) {
+    lines.push(`\n${plan.operatorContext}`);
+  }
   return lines.join("\n");
 }
 
@@ -58,6 +64,36 @@ function taskPrompt(task: Task): string {
 }
 
 /**
+ * Read tokens and dollars off the SDK's terminal `result` message.
+ *
+ * Both branches of SDKResultMessage — `subtype: "success"` and the error
+ * subtypes — carry `usage` and `total_cost_usd`, which is the whole reason
+ * this is read before the success/failure branch below: a task that burns
+ * sixty turns and then fails still spent the money, and a cost report that
+ * omits failures is not a cost report.
+ *
+ * Every field is coerced defensively. A future SDK that renames or nulls one
+ * of these should degrade to 0 for that field, never to NaN, which would
+ * poison every sum downstream.
+ */
+function readUsage(message: {
+  usage?: Record<string, unknown>;
+  total_cost_usd?: number;
+  num_turns?: number;
+}): TaskUsage {
+  const u = message.usage ?? {};
+  const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    inputTokens: num(u.input_tokens),
+    outputTokens: num(u.output_tokens),
+    cacheReadInputTokens: num(u.cache_read_input_tokens),
+    cacheCreationInputTokens: num(u.cache_creation_input_tokens),
+    costUsd: num(message.total_cost_usd),
+    turns: num(message.num_turns),
+  };
+}
+
+/**
  * Run one task to completion in the target repo, headlessly.
  * Streams the agent's messages to `onMessage` (for live logging) and
  * resolves to a structured result.
@@ -79,6 +115,9 @@ export async function runTask(
 ): Promise<TaskResult> {
   const start = Date.now();
   const model = task.model ?? plan.model ?? DEFAULT_MODEL;
+  // Declared outside the try so a throw after the result message still
+  // reports what was already spent.
+  let usage: TaskUsage | undefined;
 
   try {
     let finalSummary = "";
@@ -100,8 +139,9 @@ export async function runTask(
           if (block.type === "text" && onMessage) onMessage(block.text);
         }
       }
-      // The terminal `result` message carries the final outcome.
+      // The terminal `result` message carries the final outcome — and the bill.
       if (message.type === "result") {
+        usage = readUsage(message);
         if (message.subtype === "success") {
           finalSummary = message.result ?? "";
         } else {
@@ -110,6 +150,7 @@ export async function runTask(
             status: "failed",
             error: `Agent ended with subtype "${message.subtype}".`,
             durationMs: Date.now() - start,
+            usage,
           };
         }
       }
@@ -120,6 +161,7 @@ export async function runTask(
       status: "success",
       summary: finalSummary,
       durationMs: Date.now() - start,
+      usage,
     };
   } catch (e) {
     return {
@@ -127,6 +169,7 @@ export async function runTask(
       status: "failed",
       error: (e as Error).message,
       durationMs: Date.now() - start,
+      usage,
     };
   }
 }

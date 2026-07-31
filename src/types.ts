@@ -68,6 +68,34 @@ export interface BuildPlan {
   policy: DeployPolicy;
   /** The tasks that make up the build. */
   tasks: Task[];
+  /**
+   * Operator write-back, threaded into every agent's shared context: answers
+   * the operator gave to prior blockers, plus the names of documents they
+   * attached. Populated by the cloud runner (cloud-job.ts) from Firestore +
+   * Cloud Storage at the start of a run, so an agent sees the answer without
+   * being told to go looking. Absent on a plain CLI run — a no-op when unset.
+   */
+  operatorContext?: string;
+}
+
+/**
+ * What one agent task actually consumed, read off the Agent SDK's terminal
+ * `result` message. Present only when an agent ran and reported — a deferred,
+ * skipped, or dry-run task has no usage because nothing was spent.
+ *
+ * `undefined` means UNKNOWN, never zero. Anything that sums these must skip
+ * absent values rather than coercing them, or a run with no telemetry reports
+ * a confident $0.00 (Canon 2: one measure, and it says what it means).
+ */
+export interface TaskUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  /** Dollars, as reported by the SDK (`total_cost_usd`). */
+  costUsd: number;
+  /** Agentic turns the task took (`num_turns`) — the shape of the loop. */
+  turns: number;
 }
 
 /** Result of resolving a single task. */
@@ -86,4 +114,9 @@ export interface TaskResult {
   error?: string;
   /** Wall-clock duration in milliseconds. */
   durationMs: number;
+  /**
+   * Tokens and dollars this task cost. Undefined for deferred/skipped/dry-run
+   * tasks, and for an agent task that died before the SDK emitted a result.
+   */
+  usage?: TaskUsage;
 }
