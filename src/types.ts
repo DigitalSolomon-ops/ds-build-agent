@@ -50,6 +50,14 @@ export interface DeployPolicy {
    */
   gatePhase?: string;
   gatedPhase?: string;
+  /**
+   * Optional per-run cost cap in USD (`deploy_policy.max_run_usd`). When set, it
+   * OVERRIDES the runner's default (the `MAX_RUN_USD` env / built-in fallback) for
+   * this plan — the cloud runner stops dispatching new tasks once accumulated
+   * reported cost reaches it. A safety brake, not a budget: absent means "use the
+   * runner default", never "no cap".
+   */
+  maxRunUsd?: number;
 }
 
 /** The whole application build, top to bottom. */

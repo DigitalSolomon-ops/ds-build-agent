@@ -119,6 +119,11 @@ function parsePolicy(raw: unknown): DeployPolicy {
     // the FastIG plan. Presence of the key is the switch; the prefixes are fixed.
     gatePhase: d.launch_gate !== undefined ? "6" : undefined,
     gatedPhase: d.launch_gate !== undefined ? "7" : undefined,
+    // Optional per-plan cost cap; only a positive finite number counts.
+    maxRunUsd:
+      typeof d.max_run_usd === "number" && Number.isFinite(d.max_run_usd) && d.max_run_usd > 0
+        ? d.max_run_usd
+        : undefined,
   };
 }
 

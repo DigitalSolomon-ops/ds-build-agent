@@ -18,6 +18,14 @@ export interface OrchestratorOptions {
   onEvent?: (event: OrchestratorEvent) => void;
   /** Integration hookups (MCP servers, extra tools) handed to every agent. */
   integrations?: AgentIntegrations;
+  /**
+   * Cost-cap brake. Consulted before dispatching each not-yet-running task; when
+   * it returns true the orchestrator starts NOTHING new and skips every remaining
+   * task with a cap reason (tasks already running finish on their own — abort, not
+   * kill). Absent = no cap, unchanged behaviour. The caller owns the accumulator
+   * (cloud-job sums reported per-task cost as task-done events land).
+   */
+  capReached?: () => boolean;
 }
 
 export type OrchestratorEvent =
@@ -93,6 +101,19 @@ export async function orchestrate(
         for (const id of [...remaining]) {
           if (running.has(id)) continue;
           const task = byId.get(id)!;
+
+          // 0) Cost cap. Once the accumulated spend crosses the run cap, start
+          // nothing new: skip every not-yet-running task with the cap reason.
+          // Checked first so a capped run halts uniformly rather than partly
+          // routing through dep/gate logic. Tasks already running finish; their
+          // pump() re-entry sees the cap still tripped and starts nothing.
+          if (opts.capReached?.()) {
+            const reason = "Run cost cap reached — dispatch halted.";
+            finish(id, { taskId: id, status: "skipped", error: reason, durationMs: 0 });
+            opts.onEvent?.({ type: "task-skipped", task, reason });
+            progressed = true;
+            continue;
+          }
 
           // 1) A failed/skipped dependency poisons this task.
           const bad = failedDep(task);
