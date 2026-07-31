@@ -1,0 +1,19 @@
+schema: digitalsolomon/project@1
+
+project:
+  key: ds-build-agent
+  name: DS Build Agent
+  portfolio: internal-tools
+  purpose: >
+    Takes a build plan and dispatches Claude agents per task in dependency order. The harness that executes every other project's plan.yaml.
+  status: Running. Web dashboard also hosted at dashboard.digitalsolomon.com.
+
+location: { now: Digital Solomon/platform/ds-build-agent, after: portfolios/internal-tools/ds-build-agent }
+
+gates:
+  inherit: portfolio
+  adds:
+    - key: plan-paths-are-contracts
+      rule: >
+        The harness reads each project's plan from a fixed path. Moving a plan file
+        without updating the harness silently breaks that project's build.
