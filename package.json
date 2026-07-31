@@ -10,7 +10,6 @@
     "build": "tsc",
     "start": "tsc && node dist/index.js",
     "dev": "node --loader ts-node/esm src/index.ts",
-    "dashboard": "tsc && node dist/dashboard/server.js",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
