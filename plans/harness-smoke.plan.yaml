@@ -1,0 +1,69 @@
+name: harness-smoke
+description: First cloud run against the post-Phase-B harness. Proves cost capture, cap resolution, and live cockpit behaviour. Builds nothing of value by design.
+
+deploy_policy:
+  max_run_usd: 5.00
+
+tasks:
+  - id: smoke-write-file
+    phase: "1"
+    executor: agent
+    model: haiku
+    brief: >
+      Create a file at output/smoke-1.txt containing exactly three lines:
+      the literal text HARNESS SMOKE TEST, the current UTC timestamp in
+      ISO 8601 format, and the literal text TASK ONE COMPLETE.
+      Do not create any other file. Do not modify any existing file.
+    acceptance: output/smoke-1.txt exists and has exactly three lines.
+
+  - id: smoke-run-script
+    phase: "1"
+    executor: agent
+    model: haiku
+    brief: >
+      Create output/fib.js, a Node script under 15 lines that prints the
+      first 20 Fibonacci numbers one per line starting from 0. Run it with
+      node and write its stdout to output/fib-output.txt. Do not install
+      any package.
+    acceptance: >
+      Both files exist. fib-output.txt has 20 lines and its final line is 4181.
+
+  - id: smoke-write-prose
+    phase: "1"
+    executor: agent
+    model: haiku
+    brief: >
+      Write output/dag-note.md, between 150 and 250 words, explaining what a
+      directed acyclic graph is and why a build system uses one to order
+      tasks. Plain prose. No code blocks, no external references.
+    acceptance: output/dag-note.md exists and is between 150 and 250 words.
+
+  - id: smoke-structured-json
+    phase: "1"
+    executor: agent
+    model: sonnet
+    brief: >
+      Write output/sample-data.json containing a JSON array of exactly five
+      objects. Each object has keys id (integer, 1 through 5), label
+      (string, non-empty), and active (boolean). Valid JSON, no comments,
+      no trailing commas.
+    acceptance: >
+      The file parses as JSON, is an array of length 5, and every element
+      has all three keys with the stated types.
+
+  - id: smoke-larger-script
+    phase: "1"
+    executor: agent
+    model: sonnet
+    brief: >
+      Create output/stats.js, a Node script of roughly 40 lines exporting
+      three functions - mean, median, and standard deviation - each taking
+      an array of numbers. Include a self-check at the bottom that runs all
+      three against the array 2, 4, 4, 4, 5, 5, 7, 9 and prints each result
+      labelled. Run it with node and write stdout to output/stats-output.txt.
+      Handle the empty-array case explicitly rather than returning NaN.
+      Do not install any package.
+    acceptance: >
+      Both files exist. stats-output.txt shows mean 5, median 4.5, and
+      standard deviation 2. The empty-array case is handled explicitly in
+      the source.
