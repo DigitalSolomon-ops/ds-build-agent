@@ -17,6 +17,7 @@ import { mkdirSync, writeFileSync, appendFileSync, renameSync, unlinkSync } from
 import { join } from "node:path";
 import type { BuildPlan, Task, TaskResult } from "./types.js";
 import type { OrchestratorEvent } from "./orchestrator.js";
+import { renderDashboard, type DashboardRunState } from "./dashboard.js";
 
 /** Dashboard-facing task status. Maps the harness's 4 result states plus the
  * two transient in-memory states (pending/running) the harness never records. */
@@ -75,6 +76,13 @@ export interface StateWriterInit {
   dryRun: boolean;
   /** Epoch ms the run started (so the CLI and state agree on start time). */
   startedAt: number;
+  /**
+   * When set, the self-contained HTML dashboard is (re)written to this path on
+   * every snapshot — run start and after each task event — so the "autosave"
+   * view stays current off the SAME event plumbing that writes run-state.json.
+   * Absent = no dashboard is emitted (default; state-only behaviour unchanged).
+   */
+  dashboardPath?: string;
 }
 
 /**
@@ -82,7 +90,7 @@ export interface StateWriterInit {
  * event callback; nothing here changes what the orchestrator does.
  */
 export function createStateWriter(init: StateWriterInit) {
-  const { plan, planPath, repoPath, stateDir, concurrency, dryRun, startedAt } = init;
+  const { plan, planPath, repoPath, stateDir, concurrency, dryRun, startedAt, dashboardPath } = init;
   const runStatePath = join(stateDir, "run-state.json");
   const eventsPath = join(stateDir, "events.ndjson");
 
@@ -247,6 +255,11 @@ export function createStateWriter(init: StateWriterInit) {
       tasks: all,
     };
     writeAtomic(runStatePath, JSON.stringify(state, null, 2));
+    // Autosave the dashboard off the SAME snapshot — one source of truth. The
+    // state object is structurally the DashboardRunState the renderer reads.
+    if (dashboardPath) {
+      writeAtomic(dashboardPath, renderDashboard(plan, state as DashboardRunState));
+    }
   }
 
   /** Attach to the CLI's onEvent: update the model, append, re-snapshot. */
@@ -348,5 +361,5 @@ export function createStateWriter(init: StateWriterInit) {
     snapshot("complete");
   }
 
-  return { handleEvent, finalize, paths: { runStatePath, eventsPath } };
+  return { handleEvent, finalize, paths: { runStatePath, eventsPath, dashboardPath } };
 }
