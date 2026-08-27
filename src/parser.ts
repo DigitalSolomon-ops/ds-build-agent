@@ -7,23 +7,49 @@ export class PlanError extends Error {}
 
 const EXECUTORS: Executor[] = ["agent", "human", "ghl"];
 
+/** Options controlling how the warning pass surfaces its findings. */
+export interface ValidateOptions {
+  /**
+   * Called with the full list of non-fatal warnings BEFORE any hard error is
+   * thrown, so a caller can count them (for `--strict`) or gate on them even
+   * when the plan then fails to load. Receives an empty array for a clean plan.
+   */
+  onWarnings?: (warnings: string[]) => void;
+  /**
+   * Suppress the default `console.warn` print of each warning. Off by default:
+   * unknown keys are loud on stderr unless a caller opts to render them itself.
+   */
+  quiet?: boolean;
+}
+
 /** Load and validate a build plan from a YAML file on disk. */
-export function loadPlan(path: string): BuildPlan {
+export function loadPlan(path: string, opts: ValidateOptions = {}): BuildPlan {
   let raw: unknown;
   try {
     raw = parseYaml(readFileSync(path, "utf8"));
   } catch (e) {
     throw new PlanError(`Could not read/parse plan at ${path}: ${(e as Error).message}`);
   }
-  return validatePlan(raw);
+  return validatePlan(raw, opts);
 }
 
 /**
  * Validate an untyped object into a BuildPlan. Accepts two shapes:
  *  - flat:    top-level `name`/`stack`; tasks use `brief`
  *  - project: a `project:` block; tasks use `prompt`, `executor`, `auto`
+ *
+ * Before validating, runs a non-fatal warning pass (`collectPlanWarnings`) that
+ * names every key the harness does not read — a mistyped key (`depends_on` for
+ * `deps`, a misplaced `commit_after_each_task`, a scalar `project`) is otherwise
+ * dropped silently and never surfaces until someone hand-audits the plan. The
+ * warnings are printed to stderr and handed to `opts.onWarnings`; they never
+ * change what a valid plan parses to.
  */
-export function validatePlan(raw: unknown): BuildPlan {
+export function validatePlan(raw: unknown, opts: ValidateOptions = {}): BuildPlan {
+  const warnings = collectPlanWarnings(raw);
+  if (!opts.quiet) for (const w of warnings) console.warn(`⚠ plan: ${w}`);
+  opts.onWarnings?.(warnings);
+
   if (typeof raw !== "object" || raw === null) {
     throw new PlanError("Plan must be a YAML object.");
   }
@@ -62,6 +88,113 @@ export function validatePlan(raw: unknown): BuildPlan {
     policy: parsePolicy(p.deploy_policy),
     tasks,
   };
+}
+
+// Every key the parser actually reads, per level. Anything a plan carries that
+// is NOT on the matching list is dropped silently by the YAML load — so we name
+// it. Keep these in lockstep with what validatePlan/parseTask/parsePolicy read.
+const TOP_LEVEL_KEYS = new Set(["project", "name", "tasks", "model", "deploy_policy"]);
+// When there is no `project:` block, project metadata lives at the top level
+// (the `project = p` fallback), so these are legitimate top-level keys too.
+const TOP_LEVEL_FALLBACK_KEYS = new Set([
+  "stack",
+  "conventions",
+  "description",
+  "model_id",
+  "model_note",
+]);
+const PROJECT_BLOCK_KEYS = new Set([
+  "name",
+  "description",
+  "model_note",
+  "stack",
+  "conventions",
+  "model_id",
+]);
+const DEPLOY_POLICY_KEYS = new Set(["worker_defaults", "launch_gate", "max_run_usd"]);
+const TASK_KEYS = new Set([
+  "id",
+  "phase",
+  "executor",
+  "model",
+  "title",
+  "prompt",
+  "brief",
+  "deps",
+  "acceptance",
+  "auto",
+  "outputs",
+]);
+
+/**
+ * Collect every key the harness will ignore, as human-readable warning strings.
+ * Non-fatal by design: a plan may legitimately carry documentation keys (config,
+ * gates, lane, portfolio, repo). This pass exists so a MISTYPED functional key —
+ * the kind that silently voids a dependency edge or a rollback policy — is caught
+ * automatically instead of during a hand audit. Pure: no printing, no throwing.
+ */
+export function collectPlanWarnings(raw: unknown): string[] {
+  const warnings: string[] = [];
+  if (typeof raw !== "object" || raw === null) return warnings; // hard error handled by validatePlan
+  const p = raw as Record<string, unknown>;
+
+  const hasProjectBlock = typeof p.project === "object" && p.project !== null;
+  const projectIsScalar = "project" in p && !hasProjectBlock && p.project != null;
+
+  // ── Top level ──
+  const topAllow = new Set(TOP_LEVEL_KEYS);
+  if (!hasProjectBlock) for (const k of TOP_LEVEL_FALLBACK_KEYS) topAllow.add(k);
+  for (const key of Object.keys(p)) {
+    if (key === "project" && projectIsScalar) {
+      warnings.push("`project` is a scalar; did you mean a `project:` block with a `name:` field?");
+      continue;
+    }
+    if (topAllow.has(key)) continue;
+    warnings.push(`top-level key \`${key}\` is not read by the harness and will be ignored.`);
+  }
+
+  // ── project: block ──
+  if (hasProjectBlock) {
+    const proj = p.project as Record<string, unknown>;
+    for (const key of Object.keys(proj)) {
+      if (PROJECT_BLOCK_KEYS.has(key)) continue;
+      warnings.push(`\`project.${key}\` is not read by the harness and will be ignored.`);
+    }
+  }
+
+  // ── deploy_policy: ──
+  if (typeof p.deploy_policy === "object" && p.deploy_policy !== null) {
+    const dp = p.deploy_policy as Record<string, unknown>;
+    for (const key of Object.keys(dp)) {
+      if (DEPLOY_POLICY_KEYS.has(key)) continue;
+      if (key === "commit_after_each_task") {
+        warnings.push(
+          "`deploy_policy.commit_after_each_task` is ignored here; nest it under `worker_defaults:`.",
+        );
+        continue;
+      }
+      warnings.push(`\`deploy_policy.${key}\` is not read by the harness and will be ignored.`);
+    }
+  }
+
+  // ── per-task ──
+  if (Array.isArray(p.tasks)) {
+    p.tasks.forEach((t, i) => {
+      if (typeof t !== "object" || t === null) return;
+      const task = t as Record<string, unknown>;
+      const label = typeof task.id === "string" && task.id.trim() ? task.id : `#${i}`;
+      for (const key of Object.keys(task)) {
+        if (TASK_KEYS.has(key)) continue;
+        if (key === "depends_on") {
+          warnings.push(`task "${label}": \`depends_on\` is ignored — did you mean \`deps\`?`);
+          continue;
+        }
+        warnings.push(`task "${label}": key \`${key}\` is not read by the harness and will be ignored.`);
+      }
+    });
+  }
+
+  return warnings;
 }
 
 function parseTask(t: unknown, i: number, ids: Set<string>): Task {

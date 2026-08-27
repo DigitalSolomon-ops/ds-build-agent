@@ -10,7 +10,8 @@
     "build": "tsc",
     "start": "tsc && node dist/index.js",
     "dev": "node --loader ts-node/esm src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test checks/parser.test.mjs"
   },
   "engines": {
     "node": ">=18"

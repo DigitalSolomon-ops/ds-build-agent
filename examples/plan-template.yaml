@@ -1,0 +1,148 @@
+# =============================================================================
+# ds-build-agent — CANONICAL PLAN TEMPLATE
+#
+# Copy this file, rename it, and fill it in. Every key below is one the parser
+# ACTUALLY reads (src/parser.ts). Run `ds-build <plan>.yaml --dry-run --strict`
+# and it exits 0 with `warnings: 0`. A mistyped key would show up as a warning
+# on stderr; `--strict` turns any warning into a non-zero exit.
+#
+# THE THREE TRAPS THIS TEMPLATE SHOWS THE RIGHT SIDE OF
+# -----------------------------------------------------------------------------
+#  1. `project:` MUST be a block with `name:` — a scalar string yields no name
+#     and the plan hard-fails to load ("Plan is missing a non-empty `name`").
+#  2. per-task dependencies are `deps:` — NOT `depends_on:`. `depends_on` is read
+#     by nothing, so every dependency edge silently vanishes and ordering is lost.
+#  3. `commit_after_each_task` lives under `deploy_policy.worker_defaults:` — at
+#     the top of `deploy_policy` it is ignored and per-task rollback commits are
+#     silently off.
+#
+# Keys the parser does NOT read (config, gates, lane, portfolio, repo, per-task
+# scope, deploy_policy.concurrency, deploy_policy.dry_run_first, …) are allowed
+# but will each print a warning — they are documentation only. Concurrency and
+# dry-run come from the CLI (`--concurrency`, `--dry-run`), never the plan.
+# =============================================================================
+
+# --- project: a BLOCK, never a scalar. `name` is required and becomes the build
+#     folder name (builds/<name> on the CLI, /workspace/<name> in the cloud).
+#     Also read here: description, stack, conventions, model_id, model_note.
+project:
+  name: my-new-build
+  description: >
+    One paragraph on what this app is. Injected into every agent's context.
+  stack:
+    - "Front end: static HTML/CSS/vanilla JS"
+    - "Backend: Node.js proxy on Cloud Run; secrets from Secret Manager by name"
+  conventions:
+    - "Every file gets a short header comment explaining its role."
+    - "No secrets in source — read them at runtime by name."
+
+# Default model for every task unless a task overrides it (aliases: opus | sonnet
+# | haiku). Read from `project.model_id` first, then this top-level `model`.
+model: sonnet
+
+deploy_policy:
+  # Presence of `launch_gate` switches on the FIXED phase-6 → phase-7 gate: no
+  # phase-7 task runs until every phase-6 AGENT task has succeeded. The "6"/"7"
+  # prefixes are hardcoded in the parser — name your gate phases `6-*` / `7-*`.
+  launch_gate: true
+  # Optional per-run cost cap (USD). Positive finite number, else ignored.
+  max_run_usd: 40
+  worker_defaults:
+    # TRAP 3, done right: commit a rollback point after each successful agent
+    # task. Read ONLY here — putting it at the top of deploy_policy is a no-op.
+    commit_after_each_task: true
+
+tasks:
+
+  # ---- Phase 0 — discovery ---------------------------------------------------
+  - id: validate-plan
+    phase: "0-discovery"
+    executor: agent          # agent | human | ghl
+    model: haiku             # per-task override of the plan default
+    title: Validate this plan against the parser
+    prompt: >
+      Read src/parser.ts and confirm every key this plan uses is one the parser
+      reads. Report any key that is unknown or silently ignored.
+    acceptance:
+      - "A report names every mismatched or ignored key, or confirms there are none."
+
+  # ---- Phase 1 — build -------------------------------------------------------
+  - id: scaffold
+    phase: "1-build"
+    executor: agent
+    title: Project scaffold
+    deps: [validate-plan]     # TRAP 2, done right: `deps`, NOT `depends_on`.
+    prompt: >
+      Create the project structure: a public/ folder with index.html, styles.css,
+      app.js, plus a package.json with a start script and a README.
+    outputs: [public/, package.json, README.md]
+    acceptance:
+      - "public/ contains index.html, styles.css, app.js"
+      - "package.json exists with a start script"
+
+  - id: landing-page
+    phase: "1-build"
+    executor: agent
+    title: Landing page + form
+    deps: [scaffold]
+    prompt: >
+      Build a responsive landing page with one headline, one value proposition,
+      and one lead-capture form (name, email). One CTA, no second CTA.
+    outputs: [public/index.html, public/styles.css]
+    acceptance:
+      - "Form collects name and email with proper labels"
+      - "Page is responsive on mobile"
+
+  - id: backend-proxy
+    phase: "1-build"
+    executor: agent
+    title: Backend proxy for the form POST
+    deps: [scaffold]
+    prompt: >
+      A small server that receives the form POST and forwards it server-side.
+      No secret ever reaches the browser; read secrets at runtime by name.
+    outputs: [server.js]
+    acceptance:
+      - "POST /api/lead validates input and returns JSON"
+      - "No secret literal appears in page source or repo"
+
+  # ---- Phase 2 — CRM (configured in GoHighLevel, not built by an agent) -------
+  - id: crm-fields
+    phase: "2-crm"
+    executor: ghl            # ghl → recorded to GHL-SETUP.md and deferred
+    auto: false
+    title: Create CRM custom fields
+    deps: [scaffold]
+    prompt: >
+      Create the contact custom fields the form writes to. Create only; deleting
+      a custom field wipes its values on every contact.
+    outputs: [GHL-SETUP.md]
+    acceptance:
+      - "Every field exists, proven by API read-back."
+
+  # ---- Phase 6 — QA (the launch gate; all-agent so it opens autonomously) ----
+  - id: qa-sweep
+    phase: "6-qa"
+    executor: agent
+    title: Pre-launch QA sweep
+    deps: [landing-page, backend-proxy]
+    prompt: >
+      Verify the page serves, the form submits end to end in staging, and no
+      secret is exposed. Produce a pass/fail checklist with locations.
+    outputs: [QA-REPORT.md]
+    acceptance:
+      - "Every surface has a verdict; zero FAIL items remain."
+
+  # ---- Phase 7 — production unlock (gated: waits on every phase-6 agent task) -
+  - id: dns-cutover
+    phase: "7-production"
+    executor: human          # human → recorded to BLOCKERS.md and deferred
+    auto: false
+    title: "GATE: point the domain at the service"
+    deps: [qa-sweep]
+    prompt: >
+      Route production traffic and point the domain at the service. Write the
+      rollback path down before making the change.
+    outputs: [BLOCKERS.md]
+    acceptance:
+      - "The domain serves over HTTPS with a valid certificate; rollback is written down."
