@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { resolve, join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { loadPlan, PlanError } from "./parser.js";
 import { orchestrate } from "./orchestrator.js";
 import { createStateWriter } from "./state-writer.js";
+import { renderDashboard } from "./dashboard.js";
 import type { TaskResult } from "./types.js";
 
 interface Cli {
@@ -20,6 +21,12 @@ interface Cli {
    * A path = enabled, writing state there.
    */
   state?: string;
+  /**
+   * Opt-in local dashboard. `undefined` = not requested. Empty string = enabled
+   * at the default path (`builds/<name>/dashboard.html`). A path = enabled there.
+   * Same optional-arg shape as `--state`.
+   */
+  dashboard?: string;
 }
 
 function parseArgs(argv: string[]): Cli {
@@ -32,7 +39,8 @@ function parseArgs(argv: string[]): Cli {
   };
   if (!planPath) {
     throw new Error(
-      "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run] [--strict]",
+      "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run] [--strict] " +
+        "[--state [dir]] [--dashboard [path]]",
     );
   }
   const out = get("--out") ?? join(process.cwd(), "builds");
@@ -46,6 +54,13 @@ function parseArgs(argv: string[]): Cli {
     const next = args[stateIdx + 1];
     state = next && !next.startsWith("--") ? next : "";
   }
+  // `--dashboard` mirrors `--state`: bare enables at the default path, else a path.
+  let dashboard: string | undefined;
+  const dashIdx = args.indexOf("--dashboard");
+  if (dashIdx >= 0) {
+    const next = args[dashIdx + 1];
+    dashboard = next && !next.startsWith("--") ? next : "";
+  }
   return {
     planPath: resolve(planPath),
     repoPath: resolve(out),
@@ -54,6 +69,7 @@ function parseArgs(argv: string[]): Cli {
     strict: has("--strict"),
     only: onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
     state,
+    dashboard,
   };
 }
 
@@ -81,14 +97,34 @@ async function main() {
       .map((t) => ({ ...t, deps: (t.deps ?? []).filter((d) => keep.has(d)) }));
   }
 
+  const safeName = plan.name.replace(/[^\w.-]+/g, "-");
+  const repoPath = join(cli.repoPath, safeName);
+
+  // ONE dashboard file, shared by the immediate static write and the state
+  // writer's autosave. Requested explicitly via --dashboard, or implicitly
+  // whenever --state is on (state-on auto-emits the dashboard — the documented
+  // default). Default location matches the flag's contract: builds/<name>/.
+  const dashboardRequested = cli.dashboard !== undefined || cli.state !== undefined;
+  const dashboardPath = dashboardRequested
+    ? cli.dashboard
+      ? resolve(cli.dashboard)
+      : join(repoPath, "dashboard.html")
+    : undefined;
+
+  // --dashboard: write the plan-only view immediately — before the API-key check,
+  // so it works with or without an actual run and needs no key.
+  if (cli.dashboard !== undefined && dashboardPath) {
+    mkdirSync(dirname(dashboardPath), { recursive: true });
+    writeFileSync(dashboardPath, renderDashboard(plan));
+    console.log(`▸ Dashboard:   ${dashboardPath}   [plan view]`);
+  }
+
   if (!cli.dryRun && !process.env.ANTHROPIC_API_KEY) {
     console.error("✗ ANTHROPIC_API_KEY is not set. The Agent SDK needs it to run.");
     console.error("  (Use --dry-run to preview the execution plan without a key.)");
     process.exit(1);
   }
 
-  const safeName = plan.name.replace(/[^\w.-]+/g, "-");
-  const repoPath = join(cli.repoPath, safeName);
   if (!cli.dryRun) mkdirSync(repoPath, { recursive: true });
 
   const agentCount = plan.tasks.filter((t) => t.executor === "agent" && t.auto).length;
@@ -112,9 +148,16 @@ async function main() {
           concurrency: cli.concurrency,
           dryRun: cli.dryRun,
           startedAt: started,
+          // Autosave the dashboard off the same event stream when requested.
+          dashboardPath,
         })
       : null;
-  if (stateWriter) console.log(`▸ State:       ${stateWriter.paths.runStatePath}\n`);
+  if (stateWriter) {
+    console.log(`▸ State:       ${stateWriter.paths.runStatePath}`);
+    if (stateWriter.paths.dashboardPath)
+      console.log(`▸ Dashboard:   ${stateWriter.paths.dashboardPath}   [live autosave]`);
+    console.log("");
+  }
 
   const results = await orchestrate(plan, {
     repoPath,
