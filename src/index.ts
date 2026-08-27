@@ -11,6 +11,8 @@ interface Cli {
   repoPath: string;
   concurrency: number;
   dryRun: boolean;
+  /** Treat any plan warning (unknown/ignored key) as fatal — non-zero exit. */
+  strict: boolean;
   only?: string[];
   /**
    * Opt-in run-state emitter. `undefined` = disabled (default, byte-for-byte
@@ -30,7 +32,7 @@ function parseArgs(argv: string[]): Cli {
   };
   if (!planPath) {
     throw new Error(
-      "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run]",
+      "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run] [--strict]",
     );
   }
   const out = get("--out") ?? join(process.cwd(), "builds");
@@ -49,6 +51,7 @@ function parseArgs(argv: string[]): Cli {
     repoPath: resolve(out),
     concurrency: Number.isFinite(concurrency) ? concurrency : 3,
     dryRun: has("--dry-run"),
+    strict: has("--strict"),
     only: onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
     state,
   };
@@ -61,7 +64,12 @@ function truncate(s: string, n = 180): string {
 
 async function main() {
   const cli = parseArgs(process.argv);
-  const plan = loadPlan(cli.planPath);
+  // loadPlan prints each warning to stderr as it loads; we also capture the list
+  // so the summary can show a count and --strict can turn any warning into a
+  // non-zero exit. A scalar `project:` still hard-fails inside loadPlan — but its
+  // warning is printed first, so the operator sees the fix, not just the failure.
+  let planWarnings: string[] = [];
+  const plan = loadPlan(cli.planPath, { onWarnings: (w) => (planWarnings = w) });
 
   // --only: scope to specific task ids, pruning deps outside the kept set.
   if (cli.only) {
@@ -139,18 +147,29 @@ async function main() {
   });
 
   stateWriter?.finalize(results);
-  report(results, Date.now() - started, cli.dryRun);
+  report(results, Date.now() - started, cli.dryRun, planWarnings.length, cli.strict);
   const failed = results.filter((r) => r.status === "failed").length;
-  process.exit(failed > 0 ? 1 : 0);
+  // --strict promotes any plan warning to a failure; without it warnings are
+  // informational and never change the exit code.
+  const strictFail = cli.strict && planWarnings.length > 0;
+  process.exit(failed > 0 || strictFail ? 1 : 0);
 }
 
-function report(results: TaskResult[], totalMs: number, dryRun: boolean): void {
+function report(
+  results: TaskResult[],
+  totalMs: number,
+  dryRun: boolean,
+  warnings: number,
+  strict: boolean,
+): void {
   const count = (s: TaskResult["status"]) => results.filter((r) => r.status === s).length;
   console.log(`\n─── ${dryRun ? "Dry run" : "Build"} complete in ${Math.round(totalMs / 1000)}s ───`);
+  const strictNote = strict && warnings > 0 ? "  [--strict → exit 1]" : "";
   console.log(
     `   ${dryRun ? "would build" : "built"}: ${count("success")}   ` +
       `deferred (human/ghl): ${count("deferred")}   ` +
-      `skipped: ${count("skipped")}   failed: ${count("failed")}`,
+      `skipped: ${count("skipped")}   failed: ${count("failed")}   ` +
+      `warnings: ${warnings}${strictNote}`,
   );
   for (const r of results.filter((x) => x.status === "failed" || x.status === "skipped")) {
     console.log(`   ${r.status === "failed" ? "✗" : "⊘"} ${r.taskId}: ${r.error ?? "unknown"}`);
