@@ -100,3 +100,17 @@ recorded to `BLOCKERS.md` (human) or `GHL-SETUP.md` (ghl).
 With run state, each task shows one of: **pending**, **running**, **built**,
 **deferred**, **skipped**, **failed**. Click any task to trace its dependency
 chain — green = what it waits on, amber = what waits on it.
+
+## Resume artifact — STATUS.md
+
+`--status [path]` (and, like the dashboard, `--state` implicitly) emits a
+Markdown **STATUS.md** off the *same* per-event snapshot — a durable, human-
+readable resume point: where to pick up (next-actionable tasks), the last task's
+summary, what a human still owns (each gate + the doc it was recorded to), any
+failures, the launch-gate state, and a per-phase table.
+
+Unlike the HTML dashboard, STATUS.md defaults to the **state dir** (outside
+`builds/<name>/`), so `commit_after_each_task` never sweeps it into the product
+repo. Pass an explicit `--status <path>` to place it in-repo on purpose. Its
+timestamp comes from the snapshot (`run.updatedAt`), so re-rendering the same
+snapshot is byte-identical — clean diffs if you do commit it.

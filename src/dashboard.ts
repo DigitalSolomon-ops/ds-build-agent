@@ -22,6 +22,7 @@
  */
 import type { BuildPlan } from "./types.js";
 import type { TaskState } from "./state-writer.js"; // type-only: erased, no runtime cycle
+import { resolveModel } from "./model.js";
 
 /**
  * The subset of the state-writer's `run-state.json` snapshot the dashboard reads.
@@ -43,6 +44,8 @@ export interface DashboardRunState {
     id: string;
     state?: TaskState;
     error?: string;
+    /** Agent's final summary — used by the STATUS.md "Last completed" section. */
+    summary?: string;
     durationMs?: number;
     costUsd?: number;
     doc?: string;
@@ -80,9 +83,15 @@ function phaseRank(p: string): number {
 
 /**
  * Render the full dashboard HTML for a plan, optionally overlaid with live run
- * state. Pure: no I/O, deterministic apart from the generated-at timestamp.
+ * state. Pure: no I/O. Deterministic apart from the generated-at timestamp —
+ * pass `opts.generatedAt` (e.g. the snapshot's updatedAt) to make it fully
+ * byte-stable, which an idempotent regenerator (P2) relies on.
  */
-export function renderDashboard(plan: BuildPlan, runState?: DashboardRunState): string {
+export function renderDashboard(
+  plan: BuildPlan,
+  runState?: DashboardRunState,
+  opts?: { generatedAt?: string },
+): string {
   const gatePhase = plan.policy.gatePhase;
   const gatedPhase = plan.policy.gatedPhase;
   const gated = gatePhase !== undefined && gatedPhase !== undefined;
@@ -106,7 +115,7 @@ export function renderDashboard(plan: BuildPlan, runState?: DashboardRunState): 
     title: t.title,
     phase: t.phase ?? "(none)",
     executor: t.executor,
-    model: t.model ?? plan.model ?? "sonnet(default)",
+    model: resolveModel(t, plan),
     deps: t.deps ?? [],
     unblocks: dependents.get(t.id) ?? [],
     brief: flat(t.brief),
@@ -237,7 +246,7 @@ export function renderDashboard(plan: BuildPlan, runState?: DashboardRunState): 
   for (const t of tasks) graph[t.id] = { deps: t.deps, unblocks: t.unblocks };
   const graphJson = JSON.stringify(graph).replace(/</g, "\\u003c");
 
-  const generatedAt = new Date().toISOString();
+  const generatedAt = opts?.generatedAt ?? new Date().toISOString();
   const refreshMeta = running ? `<meta http-equiv="refresh" content="4">` : "";
   const gateMarker = gated ? `<!-- launch-gate:${gatePhase}->${gatedPhase} -->` : "";
   const subKind = hasRun

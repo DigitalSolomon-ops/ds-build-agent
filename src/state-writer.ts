@@ -18,6 +18,7 @@ import { join } from "node:path";
 import type { BuildPlan, Task, TaskResult, VerifyRecord } from "./types.js";
 import type { OrchestratorEvent } from "./orchestrator.js";
 import { renderDashboard, type DashboardRunState } from "./dashboard.js";
+import { renderStatus } from "./status.js";
 
 /** Dashboard-facing task status. Maps the harness's 4 result states plus the
  * two transient in-memory states (pending/running) the harness never records. */
@@ -85,6 +86,13 @@ export interface StateWriterInit {
    * Absent = no dashboard is emitted (default; state-only behaviour unchanged).
    */
   dashboardPath?: string;
+  /**
+   * When set, the Markdown STATUS.md resume doc is (re)written here on every
+   * snapshot — off the SAME event plumbing as run-state.json and the dashboard.
+   * Defaults (in index.ts) to the STATE dir, never the build repo, so
+   * commit_after_each_task never captures it. Absent = not emitted.
+   */
+  statusPath?: string;
 }
 
 /**
@@ -92,7 +100,7 @@ export interface StateWriterInit {
  * event callback; nothing here changes what the orchestrator does.
  */
 export function createStateWriter(init: StateWriterInit) {
-  const { plan, planPath, repoPath, stateDir, concurrency, dryRun, startedAt, dashboardPath } = init;
+  const { plan, planPath, repoPath, stateDir, concurrency, dryRun, startedAt, dashboardPath, statusPath } = init;
   const runStatePath = join(stateDir, "run-state.json");
   const eventsPath = join(stateDir, "events.ndjson");
 
@@ -262,6 +270,10 @@ export function createStateWriter(init: StateWriterInit) {
     if (dashboardPath) {
       writeAtomic(dashboardPath, renderDashboard(plan, state as DashboardRunState));
     }
+    // ...and the Markdown resume doc off the very same snapshot.
+    if (statusPath) {
+      writeAtomic(statusPath, renderStatus(plan, state as DashboardRunState));
+    }
   }
 
   /** Attach to the CLI's onEvent: update the model, append, re-snapshot. */
@@ -387,5 +399,5 @@ export function createStateWriter(init: StateWriterInit) {
     snapshot("complete");
   }
 
-  return { handleEvent, finalize, paths: { runStatePath, eventsPath, dashboardPath } };
+  return { handleEvent, finalize, paths: { runStatePath, eventsPath, dashboardPath, statusPath } };
 }

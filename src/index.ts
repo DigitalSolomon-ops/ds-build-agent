@@ -5,6 +5,7 @@ import { loadPlan, PlanError } from "./parser.js";
 import { orchestrate } from "./orchestrator.js";
 import { createStateWriter } from "./state-writer.js";
 import { renderDashboard } from "./dashboard.js";
+import { renderStatus } from "./status.js";
 import type { TaskResult } from "./types.js";
 
 interface Cli {
@@ -27,6 +28,12 @@ interface Cli {
    * Same optional-arg shape as `--state`.
    */
   dashboard?: string;
+  /**
+   * Opt-in Markdown STATUS.md resume doc. Same optional-arg shape as
+   * `--dashboard`. Empty string = enabled at the default path (the STATE dir, not
+   * the build repo). A path = enabled there.
+   */
+  status?: string;
 }
 
 function parseArgs(argv: string[]): Cli {
@@ -40,7 +47,7 @@ function parseArgs(argv: string[]): Cli {
   if (!planPath) {
     throw new Error(
       "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run] [--strict] " +
-        "[--state [dir]] [--dashboard [path]]",
+        "[--state [dir]] [--dashboard [path]] [--status [path]]",
     );
   }
   const out = get("--out") ?? join(process.cwd(), "builds");
@@ -61,6 +68,13 @@ function parseArgs(argv: string[]): Cli {
     const next = args[dashIdx + 1];
     dashboard = next && !next.startsWith("--") ? next : "";
   }
+  // `--status` mirrors `--dashboard`: bare enables at the default path, else a path.
+  let status: string | undefined;
+  const statusIdx = args.indexOf("--status");
+  if (statusIdx >= 0) {
+    const next = args[statusIdx + 1];
+    status = next && !next.startsWith("--") ? next : "";
+  }
   return {
     planPath: resolve(planPath),
     repoPath: resolve(out),
@@ -70,6 +84,7 @@ function parseArgs(argv: string[]): Cli {
     only: onlyRaw ? onlyRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
     state,
     dashboard,
+    status,
   };
 }
 
@@ -99,6 +114,10 @@ async function main() {
 
   const safeName = plan.name.replace(/[^\w.-]+/g, "-");
   const repoPath = join(cli.repoPath, safeName);
+  // The state dir lives OUTSIDE the build repo (next to builds/<name>/), so
+  // commit_after_each_task never captures harness telemetry. Hoisted (exact
+  // expression) so both the state writer and STATUS.md's default can reference it.
+  const stateDir = cli.state ? resolve(cli.state) : join(cli.repoPath, ".ds-runs", safeName);
 
   // ONE dashboard file, shared by the immediate static write and the state
   // writer's autosave. Requested explicitly via --dashboard, or implicitly
@@ -111,12 +130,28 @@ async function main() {
       : join(repoPath, "dashboard.html")
     : undefined;
 
+  // STATUS.md resume doc. Requested via --status or implicitly with --state.
+  // UNLIKE the dashboard, it defaults to the STATE dir, never the build repo, so
+  // it is never swept into a commit_after_each_task commit.
+  const statusRequested = cli.status !== undefined || cli.state !== undefined;
+  const statusPath = statusRequested
+    ? cli.status
+      ? resolve(cli.status)
+      : join(stateDir, "STATUS.md")
+    : undefined;
+
   // --dashboard: write the plan-only view immediately — before the API-key check,
   // so it works with or without an actual run and needs no key.
   if (cli.dashboard !== undefined && dashboardPath) {
     mkdirSync(dirname(dashboardPath), { recursive: true });
     writeFileSync(dashboardPath, renderDashboard(plan));
     console.log(`▸ Dashboard:   ${dashboardPath}   [plan view]`);
+  }
+  // --status: same immediate plan-only write.
+  if (cli.status !== undefined && statusPath) {
+    mkdirSync(dirname(statusPath), { recursive: true });
+    writeFileSync(statusPath, renderStatus(plan));
+    console.log(`▸ STATUS:      ${statusPath}   [plan view]`);
   }
 
   if (!cli.dryRun && !process.env.ANTHROPIC_API_KEY) {
@@ -142,20 +177,21 @@ async function main() {
           plan,
           planPath: cli.planPath,
           repoPath,
-          // Default state dir lives OUTSIDE the build repo, next to (not inside)
-          // builds/<name>/, so commit_after_each_task never captures it.
-          stateDir: cli.state ? resolve(cli.state) : join(cli.repoPath, ".ds-runs", safeName),
+          stateDir,
           concurrency: cli.concurrency,
           dryRun: cli.dryRun,
           startedAt: started,
-          // Autosave the dashboard off the same event stream when requested.
+          // Autosave the dashboard + STATUS.md off the same event stream.
           dashboardPath,
+          statusPath,
         })
       : null;
   if (stateWriter) {
     console.log(`▸ State:       ${stateWriter.paths.runStatePath}`);
     if (stateWriter.paths.dashboardPath)
       console.log(`▸ Dashboard:   ${stateWriter.paths.dashboardPath}   [live autosave]`);
+    if (stateWriter.paths.statusPath)
+      console.log(`▸ STATUS:      ${stateWriter.paths.statusPath}   [live autosave]`);
     console.log("");
   }
 

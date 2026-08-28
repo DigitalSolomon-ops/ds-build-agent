@@ -31,6 +31,14 @@ test("static plan dashboard is valid, self-contained HTML", () => {
   assert.ok(!/<img[^>]+src=["']https?:/i.test(html), "no external image");
 });
 
+test("renderDashboard is byte-stable when generatedAt is pinned (P2 idempotency)", () => {
+  const a = renderDashboard(template(), undefined, { generatedAt: "2026-01-01T00:00:00.000Z" });
+  const b = renderDashboard(template(), undefined, { generatedAt: "2026-01-01T00:00:00.000Z" });
+  assert.equal(a, b, "same generatedAt -> identical bytes");
+  const c = renderDashboard(template(), undefined, { generatedAt: "2027-02-02T00:00:00.000Z" });
+  assert.notEqual(a, c, "a different generatedAt changes the output");
+});
+
 test("plan dashboard renders the HUMAN GATES section", () => {
   const html = renderDashboard(template());
   assert.ok(html.includes("Human gates"), "has the human gates heading");
