@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import type { BuildPlan, DeployPolicy, Executor, Task } from "./types.js";
+import { isBuildExecutor } from "./types.js";
 import { RECOGNIZED_SENSITIVITIES } from "./model.js";
 
 /** Thrown when a plan file is structurally invalid. */
 export class PlanError extends Error {}
 
-const EXECUTORS: Executor[] = ["agent", "human", "ghl"];
+const EXECUTORS: Executor[] = ["agent", "codex", "human", "ghl"];
 
 /** Options controlling how the warning pass surfaces its findings. */
 export interface ValidateOptions {
@@ -128,6 +129,7 @@ const TASK_KEYS = new Set([
   "sensitivity",
   "verify_model",
   "scope",
+  "browser",
 ]);
 
 /** Accept a scalar or a list; trim, lower-case, drop blanks. Undefined if empty. */
@@ -239,11 +241,13 @@ export function collectPlanWarnings(raw: unknown): string[] {
         ? ((t as Record<string, unknown>).phase as string)
         : "";
     // Executor defaults to "agent" when absent (parseTask), so a missing executor
-    // counts as an agent task — the same rule the gate enforcement uses.
-    const isAgent = (t: unknown): boolean =>
-      typeof t === "object" &&
-      t !== null &&
-      ((t as Record<string, unknown>).executor ?? "agent") === "agent";
+    // counts as a build task — the same rule the gate enforcement uses. `codex`
+    // is a build executor too, so it counts toward the gate exactly like `agent`.
+    const isAgent = (t: unknown): boolean => {
+      if (typeof t !== "object" || t === null) return false;
+      const e = (t as Record<string, unknown>).executor ?? "agent";
+      return e === "agent" || e === "codex";
+    };
     const hasGateAgentTask = p.tasks.some((t) => phaseOf(t).startsWith(GATE_PHASE) && isAgent(t));
     const hasGatedTask = p.tasks.some((t) => phaseOf(t).startsWith(GATED_PHASE));
     if (!hasGateAgentTask) {
@@ -297,8 +301,8 @@ function parseTask(t: unknown, i: number, ids: Set<string>): Task {
     title: str(task.title) ?? task.id,
     brief,
     executor,
-    // Agent tasks default to auto:true unless explicitly disabled.
-    auto: executor === "agent" ? task.auto !== false : false,
+    // Build tasks (agent | codex) default to auto:true unless explicitly disabled.
+    auto: isBuildExecutor(executor) ? task.auto !== false : false,
     phase: str(task.phase),
     deps: strArray(task.deps, `Task "${task.id}" \`deps\``),
     outputs: looseStrArray(task.outputs),
@@ -307,6 +311,8 @@ function parseTask(t: unknown, i: number, ids: Set<string>): Task {
     sensitivity: normalizeSensitivity(task.sensitivity),
     verifyModel: str(task.verify_model),
     scope: strArray(task.scope, `Task "${task.id}" \`scope\``),
+    // Opt-in headless browser (Claude runner). Only a literal `true` enables it.
+    browser: task.browser === true ? true : undefined,
   };
 }
 

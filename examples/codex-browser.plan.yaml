@@ -1,0 +1,34 @@
+name: Codex + Browser demo
+description: >
+  Minimal plan exercising the two new capabilities: a Codex-executed build task
+  and a browser-enabled task (Playwright MCP). Use with --dry-run to see routing
+  without spawning codex or launching Chromium.
+stack:
+  - TypeScript
+  - Node
+
+tasks:
+  - id: scaffold
+    title: Scaffold the project (Claude)
+    prompt: Create package.json and a src/ entrypoint.
+
+  - id: api
+    title: Implement the API layer (Codex)
+    executor: codex          # built via `codex exec` instead of the Agent SDK
+    model: gpt-5-codex       # a real Codex model; a Claude tier here is ignored
+    deps: [scaffold]
+    prompt: Implement the REST handlers described in the brief.
+
+  - id: e2e
+    title: Drive the signup flow in a real browser (Claude + Playwright)
+    browser: true            # hands this agent the headless Playwright MCP
+    deps: [api]
+    prompt: >
+      Open the running app, click through the signup form, and confirm the
+      success page renders. Report each step.
+
+  - id: signoff
+    title: Human compliance sign-off
+    executor: human
+    deps: [e2e]
+    prompt: Review the flow for consent + disclosure before launch.

@@ -17,6 +17,7 @@
  *     Interpolated plan/agent text is passed through asciiSafe() defensively.
  */
 import type { BuildPlan } from "./types.js";
+import { isBuildExecutor } from "./types.js";
 import type { DashboardRunState } from "./dashboard.js";
 
 /** A task counts as RESOLVED when built OR deferred — the orchestrator's rule, so
@@ -125,7 +126,7 @@ export function renderStatus(plan: BuildPlan, runState?: DashboardRunState): str
   }
 
   // ---- Human gates ----
-  const gates = plan.tasks.filter((t) => t.executor !== "agent");
+  const gates = plan.tasks.filter((t) => !isBuildExecutor(t.executor));
   if (gates.length) {
     L.push("## Human gates");
     L.push("");

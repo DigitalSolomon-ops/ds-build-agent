@@ -4,6 +4,12 @@ import type { BuildPlan, Task, TaskResult, TaskUsage, VerifyRecord } from "./typ
 import { explainModel } from "./model.js";
 import { normalizePath } from "./scope.js";
 import { parseVerdict, verifyTriggers } from "./verify.js";
+import { sharedContext, taskPrompt } from "./prompt.js";
+import { composeAgentIntegrations, type AgentIntegrations } from "./integrations.js";
+
+// AgentIntegrations moved to integrations.ts (SDK-free, shared with the Codex
+// runner). Re-exported here so existing importers (orchestrator.ts) are unaffected.
+export type { AgentIntegrations };
 
 /**
  * Pull a repo-relative written path out of a Write/Edit tool_use block, for
@@ -28,62 +34,6 @@ const BUILD_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
 
 /** Default model for an adversarial verify pass — stronger than the build tier. */
 const VERIFY_MODEL = "opus";
-
-/**
- * Compose the standing context handed to every agent: what app is being
- * built, the approved stack, and the house conventions. This keeps builds
- * consistent regardless of which task an agent picks up.
- */
-export function sharedContext(plan: BuildPlan): string {
-  const lines: string[] = [
-    `You are building the application "${plan.name}".`,
-  ];
-  if (plan.description) lines.push(`\nApp description:\n${plan.description}`);
-  if (plan.stack?.length) {
-    lines.push(`\nApproved technology stack (use these unless the task says otherwise):`);
-    for (const s of plan.stack) lines.push(`  - ${s}`);
-  }
-  if (plan.conventions?.length) {
-    lines.push(`\nConventions every task must follow:`);
-    for (const c of plan.conventions) lines.push(`  - ${c}`);
-  }
-  lines.push(
-    `\nHard rules:`,
-    `  - Never write API keys, tokens, or credentials into source. Use a .env`,
-    `    file (git-ignored) and documented placeholders (e.g. GHL Custom Values).`,
-    `  - When a real URL/id/credential is not yet available, use a clearly-named`,
-    `    placeholder and note it, rather than inventing a value.`,
-  );
-  // Operator write-back: answers to prior blockers + attached documents. The
-  // cloud runner assembles this from Firestore/Storage so an agent reads the
-  // operator's answer here rather than being told to open BLOCKERS.md.
-  if (plan.operatorContext) {
-    lines.push(`\n${plan.operatorContext}`);
-  }
-  return lines.join("\n");
-}
-
-/** Build the concrete instruction for a single task. */
-function taskPrompt(task: Task): string {
-  const lines: string[] = [
-    `# Task: ${task.title}`,
-    ``,
-    task.brief,
-  ];
-  if (task.outputs?.length) {
-    lines.push(``, `Expected outputs: ${task.outputs.join(", ")}`);
-  }
-  if (task.acceptance?.length) {
-    lines.push(``, `Acceptance criteria — verify each before you finish:`);
-    for (const a of task.acceptance) lines.push(`  - [ ] ${a}`);
-  }
-  lines.push(
-    ``,
-    `When done, end with a short summary of what you changed and confirm the`,
-    `acceptance criteria are met. If you could not meet a criterion, say so explicitly.`,
-  );
-  return lines.join("\n");
-}
 
 /**
  * Read tokens and dollars off the SDK's terminal `result` message.
@@ -120,14 +70,6 @@ function readUsage(message: {
  * Streams the agent's messages to `onMessage` (for live logging) and
  * resolves to a structured result.
  */
-/** Optional integration hookups injected by the runtime (cloud-job). */
-export interface AgentIntegrations {
-  /** MCP servers handed to every agent (e.g. GHL scoped to one sub-account). */
-  mcpServers?: Record<string, { type: "http"; url: string; headers?: Record<string, string> }>;
-  /** Extra allowed tool patterns (e.g. "mcp__ghl__*"). */
-  extraAllowedTools?: string[];
-}
-
 export async function runTask(
   task: Task,
   plan: BuildPlan,
@@ -151,6 +93,11 @@ export async function runTask(
   // Repo-relative files this task wrote via Write/Edit, for scope enforcement.
   const filesWritten = new Set<string>();
 
+  // Fold in the headless browser (Playwright MCP) when the task opts in, so a
+  // browser task can navigate/click/fill while an ordinary code task never
+  // boots Chromium. One seam (integrations.ts) decides this for both runners.
+  const eff = composeAgentIntegrations(integrations, task);
+
   try {
     let finalSummary = "";
     for await (const message of query({
@@ -159,10 +106,10 @@ export async function runTask(
         cwd: repoPath,
         model,
         systemPrompt: { type: "preset", preset: "claude_code", append: sharedContext(plan) },
-        allowedTools: [...BUILD_TOOLS, ...(integrations?.extraAllowedTools ?? [])],
+        allowedTools: [...BUILD_TOOLS, ...(eff?.extraAllowedTools ?? [])],
         permissionMode: "acceptEdits",
         maxTurns: 60,
-        ...(integrations?.mcpServers ? { mcpServers: integrations.mcpServers } : {}),
+        ...(eff?.mcpServers ? { mcpServers: eff.mcpServers } : {}),
       },
     })) {
       // Surface the assistant's streamed text for live logs, and record any

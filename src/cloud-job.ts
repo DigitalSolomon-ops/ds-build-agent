@@ -23,6 +23,7 @@ import { validatePlan } from "./parser.js";
 import { orchestrate } from "./orchestrator.js";
 import { writeOperatorAnswers, buildOperatorContext, type OperatorAnswer } from "./operator-writeback.js";
 import type { TaskResult } from "./types.js";
+import { isBuildExecutor } from "./types.js";
 
 const env = (k: string, fallback?: string): string => {
   const v = process.env[k] ?? fallback;
@@ -81,7 +82,7 @@ async function main() {
   );
   if (satisfied.size) {
     plan.tasks = plan.tasks
-      .filter((t) => !(satisfied.has(t.id) && t.executor !== "agent"))
+      .filter((t) => !(satisfied.has(t.id) && !isBuildExecutor(t.executor)))
       .map((t) => ({ ...t, deps: (t.deps ?? []).filter((d) => !satisfied.has(d)) }));
     log("INFO", `resume: ${satisfied.size} human task(s) already done -> satisfied`);
   }

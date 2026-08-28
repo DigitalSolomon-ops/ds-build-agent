@@ -16,6 +16,7 @@
 import { mkdirSync, writeFileSync, appendFileSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { BuildPlan, Task, TaskResult, VerifyRecord } from "./types.js";
+import { isBuildExecutor } from "./types.js";
 import type { OrchestratorEvent } from "./orchestrator.js";
 import { renderDashboard, type DashboardRunState } from "./dashboard.js";
 import { renderStatus } from "./status.js";
@@ -132,10 +133,10 @@ export function createStateWriter(init: StateWriterInit) {
   const { gatePhase, gatedPhase } = plan.policy;
   const gateEnabled = gatePhase !== undefined;
   const gateAgentIds = plan.tasks
-    .filter((t) => gatePhase && t.phase?.startsWith(gatePhase) && t.executor === "agent")
+    .filter((t) => gatePhase && t.phase?.startsWith(gatePhase) && isBuildExecutor(t.executor))
     .map((t) => t.id);
   const gateHumanIds = plan.tasks
-    .filter((t) => gatePhase && t.phase?.startsWith(gatePhase) && t.executor !== "agent")
+    .filter((t) => gatePhase && t.phase?.startsWith(gatePhase) && !isBuildExecutor(t.executor))
     .map((t) => t.id);
 
   const runningIds = new Set<string>();

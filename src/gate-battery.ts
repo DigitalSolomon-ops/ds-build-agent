@@ -19,6 +19,7 @@
  */
 
 import type { BuildPlan, Task } from "./types.js";
+import { isBuildExecutor } from "./types.js";
 
 export interface GateBattery {
   /** Front-loadable gates (no agent task upstream), in plan order. Clear these first. */
@@ -38,7 +39,7 @@ export interface GateBattery {
 }
 
 const isGate = (t: Task) => t.executor === "human" || t.executor === "ghl";
-const isAgent = (t: Task) => t.executor === "agent";
+const isAgent = (t: Task) => isBuildExecutor(t.executor);
 
 /**
  * Does `task` transitively depend on any task for which `pred` is true?

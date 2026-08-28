@@ -8,8 +8,25 @@
  * as deferred so agent work can proceed against placeholders.
  */
 
-/** Who performs a task. */
-export type Executor = "agent" | "human" | "ghl";
+/**
+ * Who performs a task.
+ * - agent:  a Claude agent, via the Anthropic Agent SDK (the default).
+ * - codex:  a build agent run through the OpenAI Codex CLI (`codex exec`),
+ *           an alternative coding brain. Built and gated exactly like an
+ *           `agent` task (it counts toward the launch gate, commits, and is
+ *           adversarially verified by a Claude reviewer when sensitive).
+ * - human:  recorded to BLOCKERS.md and deferred.
+ * - ghl:    recorded to GHL-SETUP.md and deferred.
+ */
+export type Executor = "agent" | "codex" | "human" | "ghl";
+
+/** Executors the harness actually BUILDS with (dispatched, not deferred). */
+export const BUILD_EXECUTORS: readonly Executor[] = ["agent", "codex"];
+
+/** True for an executor the harness dispatches to a build runner. */
+export function isBuildExecutor(e: Executor): boolean {
+  return e === "agent" || e === "codex";
+}
 
 /** A single unit of work. */
 export interface Task {
@@ -36,6 +53,14 @@ export interface Task {
   acceptance?: string[];
   /** Optional per-task model override (defaults to the plan/global model). */
   model?: string;
+  /**
+   * Opt this task into a headless browser. When true, the build agent is handed
+   * a Playwright MCP server (navigate/click/type/fill against a real Chromium)
+   * plus the `mcp__playwright__*` tool allow-pattern. Off by default so an
+   * ordinary code task never boots a browser. Applies to `agent` and `codex`
+   * build tasks; ignored for human/ghl tasks. See integrations.ts.
+   */
+  browser?: boolean;
   /**
    * Risk tags (e.g. "compliance", "send", "secrets"). ONE shared field: it floors
    * the model up (see model.ts) and gates the adversarial verify pass (P7, which

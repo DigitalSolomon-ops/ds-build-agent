@@ -21,6 +21,7 @@
  * complete and the two sources of truth cleanly separated.
  */
 import type { BuildPlan } from "./types.js";
+import { isBuildExecutor } from "./types.js";
 import type { TaskState } from "./state-writer.js"; // type-only: erased, no runtime cycle
 import { resolveModel } from "./model.js";
 
@@ -124,11 +125,11 @@ export function renderDashboard(
   }));
   type TV = (typeof tasks)[number];
 
-  const humanGates = tasks.filter((t) => t.executor !== "agent");
+  const humanGates = tasks.filter((t) => !isBuildExecutor(t.executor));
   const phases = [...new Set(tasks.map((t) => t.phase))].sort((a, b) => phaseRank(a) - phaseRank(b));
 
   const total = tasks.length;
-  const agentCount = tasks.filter((t) => t.executor === "agent").length;
+  const agentCount = tasks.filter((t) => isBuildExecutor(t.executor)).length;
   const maxRunUsd = plan.policy.maxRunUsd ?? null;
   const commitEach = plan.policy.commitAfterEachTask;
   const liveCount = (s: TaskState) => tasks.filter((t) => t.state === s).length;
@@ -222,10 +223,9 @@ export function renderDashboard(
       `<div class="phase"><h3>${esc(p)}</h3><div class="line"></div><span class="cnt">${list.length}</span></div>` +
       `<div class="tasks">`;
     for (const t of list) {
-      const ex =
-        t.executor === "agent"
-          ? `<span class="badge b-agent">agent</span>`
-          : `<span class="badge b-gate">${esc(t.executor)} &#183; GATE</span>`;
+      const ex = isBuildExecutor(t.executor)
+        ? `<span class="badge b-agent">${esc(t.executor)}</span>`
+        : `<span class="badge b-gate">${esc(t.executor)} &#183; GATE</span>`;
       const depChips = t.deps.length
         ? t.deps.map((d) => `<span class="chip">${esc(d)}</span>`).join("")
         : `<span class="chip" style="opacity:.5">none</span>`;

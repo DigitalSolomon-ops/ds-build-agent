@@ -3,7 +3,9 @@ import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { BuildPlan, Task, TaskResult, VerifyRecord } from "./types.js";
+import { isBuildExecutor } from "./types.js";
 import { runTask, runVerify, type AgentIntegrations } from "./agent.js";
+import { runTaskCodex } from "./codex.js";
 import { isSensitive, gateSensitiveResult, verifyTriggers } from "./verify.js";
 import { gateScopeResult } from "./scope.js";
 
@@ -76,11 +78,13 @@ export async function orchestrate(
   const running = new Set<string>();
 
   const { gatePhase, gatedPhase } = plan.policy;
+  // A build task (agent | codex) in the gate phase must PASS before the gate
+  // opens; a human/ghl task there keeps it closed until hand sign-off.
   const gateAgentTasks = plan.tasks.filter(
-    (t) => gatePhase && t.phase?.startsWith(gatePhase) && t.executor === "agent",
+    (t) => gatePhase && t.phase?.startsWith(gatePhase) && isBuildExecutor(t.executor),
   );
   const gateHumanTasks = plan.tasks.filter(
-    (t) => gatePhase && t.phase?.startsWith(gatePhase) && t.executor !== "agent",
+    (t) => gatePhase && t.phase?.startsWith(gatePhase) && !isBuildExecutor(t.executor),
   );
   const isGated = (t: Task) => gatedPhase !== undefined && !!t.phase?.startsWith(gatedPhase);
   // Gate can only open autonomously if all gate agent tasks pass AND there is
@@ -161,8 +165,9 @@ export async function orchestrate(
             continue; // otherwise hold until gate resolves
           }
 
-          // 4) Non-agent tasks: record to a handoff doc and defer.
-          if (task.executor !== "agent" || !task.auto) {
+          // 4) Non-build tasks (human/ghl, or a build task with auto:false):
+          //    record to a handoff doc and defer.
+          if (!isBuildExecutor(task.executor) || !task.auto) {
             const doc = task.executor === "ghl" ? "GHL-SETUP.md" : "BLOCKERS.md";
             if (!opts.dryRun) writeHandoff(opts.repoPath, doc, task);
             finish(id, {
@@ -176,20 +181,23 @@ export async function orchestrate(
             continue;
           }
 
-          // 5) Agent task: dispatch (respect concurrency).
+          // 5) Build task: dispatch (respect concurrency). The executor picks the
+          //    coding brain — Claude (Agent SDK) or Codex (`codex exec`) — behind
+          //    an identical (task, plan, repo, onMessage, integrations) signature.
           if (running.size >= concurrency) continue;
           running.add(id);
           remaining.delete(id);
           opts.onEvent?.({ type: "task-start", task });
 
+          const buildRun = task.executor === "codex" ? runTaskCodex : runTask;
           const run = opts.dryRun
             ? Promise.resolve<TaskResult>({
                 taskId: id,
                 status: "success",
-                summary: "[dry-run] would build",
+                summary: `[dry-run] would build (${task.executor})`,
                 durationMs: 0,
               })
-            : runTask(task, plan, opts.repoPath, (text) =>
+            : buildRun(task, plan, opts.repoPath, (text) =>
                 opts.onEvent?.({ type: "task-log", task, text }),
               opts.integrations);
 

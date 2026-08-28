@@ -8,6 +8,7 @@ import { renderDashboard } from "./dashboard.js";
 import { renderStatus } from "./status.js";
 import { analyzeGateBattery } from "./gate-battery.js";
 import type { TaskResult } from "./types.js";
+import { isBuildExecutor } from "./types.js";
 
 interface Cli {
   planPath: string;
@@ -163,8 +164,13 @@ async function main() {
 
   if (!cli.dryRun) mkdirSync(repoPath, { recursive: true });
 
-  const agentCount = plan.tasks.filter((t) => t.executor === "agent" && t.auto).length;
-  console.log(`▸ Plan:        ${plan.name} (${plan.tasks.length} tasks, ${agentCount} agent-built)`);
+  const agentCount = plan.tasks.filter((t) => isBuildExecutor(t.executor) && t.auto).length;
+  const codexCount = plan.tasks.filter((t) => t.executor === "codex" && t.auto).length;
+  const browserCount = plan.tasks.filter((t) => t.browser).length;
+  const mix =
+    (codexCount ? `, ${codexCount} via codex` : "") +
+    (browserCount ? `, ${browserCount} with browser` : "");
+  console.log(`▸ Plan:        ${plan.name} (${plan.tasks.length} tasks, ${agentCount} agent-built${mix})`);
   console.log(`▸ Building in: ${repoPath}`);
   console.log(`▸ Concurrency: ${cli.concurrency}${cli.dryRun ? "   [DRY RUN — no agents, no writes]" : ""}\n`);
 
