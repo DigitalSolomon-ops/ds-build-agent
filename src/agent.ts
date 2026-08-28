@@ -1,7 +1,27 @@
+import { isAbsolute, relative } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { BuildPlan, Task, TaskResult, TaskUsage, VerifyRecord } from "./types.js";
 import { explainModel } from "./model.js";
+import { normalizePath } from "./scope.js";
 import { parseVerdict, verifyTriggers } from "./verify.js";
+
+/**
+ * Pull a repo-relative written path out of a Write/Edit tool_use block, for
+ * scope enforcement (scope.ts). Returns undefined for any other tool or a
+ * malformed block. A path outside the repo normalizes to a `../…` form, which
+ * no in-repo scope glob matches — so an out-of-repo write reads as a violation,
+ * exactly as intended.
+ */
+function writtenPath(block: unknown, repoPath: string): string | undefined {
+  if (typeof block !== "object" || block === null) return undefined;
+  const b = block as { type?: unknown; name?: unknown; input?: unknown };
+  if (b.type !== "tool_use") return undefined;
+  if (b.name !== "Write" && b.name !== "Edit") return undefined;
+  const input = b.input as { file_path?: unknown } | undefined;
+  const fp = input?.file_path;
+  if (typeof fp !== "string" || !fp.trim()) return undefined;
+  return normalizePath(isAbsolute(fp) ? relative(repoPath, fp) : fp);
+}
 
 /** Tools each build agent is allowed to use without prompting. */
 const BUILD_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
@@ -128,6 +148,8 @@ export async function runTask(
   // Declared outside the try so a throw after the result message still
   // reports what was already spent.
   let usage: TaskUsage | undefined;
+  // Repo-relative files this task wrote via Write/Edit, for scope enforcement.
+  const filesWritten = new Set<string>();
 
   try {
     let finalSummary = "";
@@ -143,10 +165,13 @@ export async function runTask(
         ...(integrations?.mcpServers ? { mcpServers: integrations.mcpServers } : {}),
       },
     })) {
-      // Surface the assistant's streamed text for live logs.
+      // Surface the assistant's streamed text for live logs, and record any
+      // file the agent wrote (Write/Edit) so scope.ts can gate against it.
       if (message.type === "assistant") {
         for (const block of message.message.content) {
           if (block.type === "text" && onMessage) onMessage(block.text);
+          const wrote = writtenPath(block, repoPath);
+          if (wrote) filesWritten.add(wrote);
         }
       }
       // The terminal `result` message carries the final outcome — and the bill.
@@ -172,6 +197,7 @@ export async function runTask(
       summary: finalSummary,
       durationMs: Date.now() - start,
       usage,
+      filesWritten: [...filesWritten],
     };
   } catch (e) {
     return {
