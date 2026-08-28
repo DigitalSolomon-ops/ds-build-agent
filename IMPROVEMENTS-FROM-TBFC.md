@@ -9,11 +9,29 @@ Legend — repo: `dsba` = this repo (ds-build-agent), `vault` = `_tools/vault`,
 `skill` = `Projects/Skills/harness-local-dashboard` (+ installed copy), `creator` =
 `the-creator/infra`.
 
-## Progress (2026-08-28)
+## Progress — ALL 11 SHIPPED (2026-08-28)
 
-- ✅ **P1 DONE** — `vault` branch `feat/vault-getSecretFast` (commit `473dae8`, projects-spine repo). `getSecretFast`/`loadSecretsFast` added; win32 CLI-first behind a <2.5s preflight, fail-fast reauth remedy, in-process cache. 5/5 unit tests. Additive — `getSecret`/`loadSecrets` untouched.
-- ✅ **P3 DONE** — `dsba` branch `feat/harness-improvements-from-tbfc`. The warning pass + `--strict` already existed (commit `30ec2cb`); this closed the real remaining gap: a declared `launch_gate` that gates nothing (no phase-6 agent task / no phase-7 task) now warns, and `--strict` escalates it. +3 tests (15/15 green).
-- ⬜ P2, P4–P10 pending. Next by leverage: **P2** (one progress source → STATUS/dashboard/PR).
+Design pass: 9 agents ground-truthed every item before implementation (several were
+already partly built — P3 ~80%, P8 ~70%, P6 ~40%, P9 ~30%, P2's renderer reusable).
+Each improvement additive + tested + committed on its own. ~60 tests, all green.
+
+| # | What | Branch (repo) | Commit |
+|---|---|---|---|
+| P1 | `getSecretFast` — win32 CLI-first, fail-fast reauth | `feat/vault-getSecretFast` (projects-spine) | `473dae8` |
+| P3 | parser warns when `launch_gate` gates nothing | `feat/harness-improvements-from-tbfc` (dsba) | `26d6147` |
+| P5 | `httpJson` — browser UA + parse-body success | dsba | `02807ec` |
+| P4 | `tools/verify` live-read library | dsba | `c3eb6c6` |
+| P10 | per-task model escalation + shared `sensitivity` | dsba | `c0a7622` |
+| P7 | adversarial verify (2 slices; 3-lens verified pre-commit) | dsba | `bee251f`, `c350199` |
+| P9 | STATUS.md resume artifact + dashboard determinism | dsba | `d56bef8` |
+| P6 | safe Cloud Run deploy helper | `feat/harness-safe-deploy-from-tbfc` (the-creator) | `65fb1fa` |
+| P2 | `progress.json` single-source generator | `feat/harness-skills-from-tbfc` (projects-spine) | `06b90ea` |
+| P8 | GHL build-path selector (automation-first) | `feat/harness-skills-from-tbfc` | `5e7b443` |
+| P11 | pre-compaction memory capture + filing (NEW skill) | `feat/harness-skills-from-tbfc` | `c55a825` |
+
+**Operator follow-ups (gated, not auto-applied):** P11 `install.mjs --apply` (edits
+settings.json); P8 install-copy to `~/.claude/skills` + the-creator API-doctrine
+clause; open PRs for the 4 branches.
 
 ---
 
