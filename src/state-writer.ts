@@ -15,7 +15,7 @@
  */
 import { mkdirSync, writeFileSync, appendFileSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import type { BuildPlan, Task, TaskResult } from "./types.js";
+import type { BuildPlan, Task, TaskResult, VerifyRecord } from "./types.js";
 import type { OrchestratorEvent } from "./orchestrator.js";
 import { renderDashboard, type DashboardRunState } from "./dashboard.js";
 
@@ -55,6 +55,8 @@ interface TaskView {
   costUsd?: number;
   tokensIn?: number;
   tokensOut?: number;
+  /** Adversarial verify pass (P7), present only for a verified sensitive task. */
+  verify?: VerifyRecord;
   turns?: number;
 }
 
@@ -288,6 +290,12 @@ export function createStateWriter(init: StateWriterInit) {
             view.tokensOut = e.result.usage.outputTokens;
             view.turns = e.result.usage.turns;
           }
+          if (e.result.verify) {
+            view.verify = e.result.verify;
+            // The verify pass has its OWN bill; fold it into this task's cost so
+            // the per-task view and the spend rollup match what actually billed.
+            if (e.result.verify.usage) view.costUsd = (view.costUsd ?? 0) + e.result.verify.usage.costUsd;
+          }
         }
         appendEvent({
           type: e.type,
@@ -300,8 +308,23 @@ export function createStateWriter(init: StateWriterInit) {
           tokensIn: e.result.usage?.inputTokens,
           tokensOut: e.result.usage?.outputTokens,
           turns: e.result.usage?.turns,
+          verifyPassed: e.result.verify?.passed,
         });
         break;
+      case "task-verify":
+        // Append-only durable record of the verify pass; the record itself rides
+        // task-done onto the view (above), so no state mutation / re-snapshot here.
+        appendEvent({
+          type: e.type,
+          taskId: e.task.id,
+          passed: e.verify.passed,
+          verdict: e.verify.verdict,
+          findings: e.verify.findings,
+          triggeredBy: e.verify.triggeredBy,
+          model: e.verify.model,
+          costUsd: e.verify.usage?.costUsd,
+        });
+        return;
       case "task-deferred":
         if (view) {
           view.state = "deferred";
@@ -351,7 +374,10 @@ export function createStateWriter(init: StateWriterInit) {
       // Absent when nothing reported — see sumReported().
       spend: reported.length
         ? {
-            costUsd: Math.round(reported.reduce((s, r) => s + r.usage!.costUsd, 0) * 1e4) / 1e4,
+            costUsd:
+              Math.round(
+                reported.reduce((s, r) => s + r.usage!.costUsd + (r.verify?.usage?.costUsd ?? 0), 0) * 1e4,
+              ) / 1e4,
             tokensIn: reported.reduce((s, r) => s + r.usage!.inputTokens, 0),
             tokensOut: reported.reduce((s, r) => s + r.usage!.outputTokens, 0),
             tasksReportingUsage: reported.length,

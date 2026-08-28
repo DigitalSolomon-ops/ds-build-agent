@@ -35,11 +35,17 @@ export function isSensitive(task: Task): boolean {
  */
 export function parseVerdict(text: string): { passed: boolean; verdict: string; findings: string[] } {
   const s = String(text || "");
-  const hasPass = /VERDICT:\s*PASS/i.test(s);
-  const hasFail = /VERDICT:\s*FAIL/i.test(s);
-  const passed = hasPass && !hasFail;
-  const line = s.match(/VERDICT:\s*(PASS|FAIL)[^\n]*/i);
-  const verdict = line ? line[0].trim() : "no VERDICT token found";
+  const lines = s
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  const lastLine = lines.length ? lines[lines.length - 1] : "";
+  // TRUNCATION-SAFE + FAIL-CLOSED: the FINAL non-empty line must itself be
+  // `VERDICT: PASS`, and no `VERDICT: FAIL` may appear anywhere. A stray earlier
+  // "VERDICT: PASS" in prose (with the real verdict truncated away) does NOT pass,
+  // and a reply carrying both tokens fails.
+  const passed = /^VERDICT:\s*PASS\b/i.test(lastLine) && !/VERDICT:\s*FAIL/i.test(s);
+  const verdict = /^VERDICT:\s*(PASS|FAIL)\b/i.test(lastLine) ? lastLine : "no final VERDICT line";
   const findings = s
     .split(/\r?\n/)
     .map((l) => l.trim())

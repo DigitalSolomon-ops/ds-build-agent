@@ -2,8 +2,9 @@ import { execFile } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { BuildPlan, Task, TaskResult } from "./types.js";
-import { runTask, type AgentIntegrations } from "./agent.js";
+import type { BuildPlan, Task, TaskResult, VerifyRecord } from "./types.js";
+import { runTask, runVerify, type AgentIntegrations } from "./agent.js";
+import { isSensitive, gateSensitiveResult, verifyTriggers } from "./verify.js";
 
 const exec = promisify(execFile);
 
@@ -26,12 +27,24 @@ export interface OrchestratorOptions {
    * (cloud-job sums reported per-task cost as task-done events land).
    */
   capReached?: () => boolean;
+  /**
+   * Override the adversarial verify runner (defaults to agent.runVerify). A test
+   * seam, and the hook a caller uses to supply an escalated verify model.
+   */
+  verifyRunner?: (
+    task: Task,
+    plan: BuildPlan,
+    repoPath: string,
+    onMessage?: (text: string) => void,
+    integrations?: AgentIntegrations,
+  ) => Promise<VerifyRecord>;
 }
 
 export type OrchestratorEvent =
   | { type: "task-start"; task: Task }
   | { type: "task-log"; task: Task; text: string }
   | { type: "task-done"; task: Task; result: TaskResult }
+  | { type: "task-verify"; task: Task; verify: VerifyRecord }
   | { type: "task-deferred"; task: Task; doc: string }
   | { type: "task-skipped"; task: Task; reason: string };
 
@@ -181,6 +194,31 @@ export async function orchestrate(
 
           run
             .then(async (result) => {
+              // P7: a sensitive task must survive an adversarial verify pass before
+              // it can count as done. Guarded so an unflagged task or a dry-run is
+              // byte-for-byte the pre-P7 path. Runs BEFORE the commit so a failed
+              // verify neither lands a rollback commit nor unblocks dependents.
+              if (!opts.dryRun && result.status === "success" && isSensitive(task)) {
+                const verify = await (opts.verifyRunner ?? runVerify)(
+                  task,
+                  plan,
+                  opts.repoPath,
+                  (text) => opts.onEvent?.({ type: "task-log", task, text }),
+                  opts.integrations,
+                ).catch(
+                  (e: unknown): VerifyRecord => ({
+                    passed: false,
+                    verdict: `verify errored: ${(e as Error)?.message ?? String(e)}`,
+                    findings: [],
+                    triggeredBy: verifyTriggers(task),
+                    model: "unknown",
+                    durationMs: 0,
+                    at: new Date().toISOString(),
+                  }),
+                );
+                result = gateSensitiveResult(task, result, verify);
+                opts.onEvent?.({ type: "task-verify", task, verify });
+              }
               if (!opts.dryRun && result.status === "success" && plan.policy.commitAfterEachTask) {
                 await gitCommit(opts.repoPath, task).catch(() => {});
               }

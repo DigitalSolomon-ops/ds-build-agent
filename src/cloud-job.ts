@@ -212,7 +212,10 @@ async function main() {
     },
     onEvent: (e) => {
       // Accumulate reported cost as it lands (tasks with no usage add nothing).
+      // The adversarial verify pass is a SEPARATE agent with its own bill in
+      // result.verify.usage — add it too, or a verify-heavy run under-counts.
       if (e.type === "task-done" && e.result.usage) spentUsd += e.result.usage.costUsd;
+      if (e.type === "task-done" && e.result.verify?.usage) spentUsd += e.result.verify.usage.costUsd;
       switch (e.type) {
         case "task-start":
           setTask(e.task.id, { status: "running", executor: e.task.executor, model: e.task.model ?? plan.model ?? "sonnet", startedAt: stamp() });
@@ -230,10 +233,15 @@ async function main() {
             summary: e.result.summary?.slice(0, 1000),
             error: e.result.error,
             durationMs: e.result.durationMs,
-            costUsd: e.result.usage?.costUsd,
+            // Build + verify bill, so the persisted per-task cost matches the cap.
+            costUsd: e.result.usage
+              ? e.result.usage.costUsd + (e.result.verify?.usage?.costUsd ?? 0)
+              : undefined,
             tokensIn: e.result.usage?.inputTokens,
             tokensOut: e.result.usage?.outputTokens,
             turns: e.result.usage?.turns,
+            // Absent for unflagged tasks; ignoreUndefinedProperties drops the key.
+            verify: e.result.verify,
           });
           log(e.result.status === "failed" ? "WARNING" : "INFO",
             `task done: ${e.task.id} -> ${e.result.status}`,
@@ -303,7 +311,10 @@ async function main() {
   const reported = results.filter((r) => r.usage);
   const usageRollup = reported.length
     ? {
-        costUsd: Math.round(reported.reduce((s, r) => s + r.usage!.costUsd, 0) * 1e4) / 1e4,
+        costUsd:
+          Math.round(
+            reported.reduce((s, r) => s + r.usage!.costUsd + (r.verify?.usage?.costUsd ?? 0), 0) * 1e4,
+          ) / 1e4,
         tokensIn: reported.reduce((s, r) => s + r.usage!.inputTokens, 0),
         tokensOut: reported.reduce((s, r) => s + r.usage!.outputTokens, 0),
         tasksReportingUsage: reported.length,

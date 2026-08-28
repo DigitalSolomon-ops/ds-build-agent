@@ -1,9 +1,13 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { BuildPlan, Task, TaskResult, TaskUsage } from "./types.js";
+import type { BuildPlan, Task, TaskResult, TaskUsage, VerifyRecord } from "./types.js";
 import { explainModel } from "./model.js";
+import { parseVerdict, verifyTriggers } from "./verify.js";
 
 /** Tools each build agent is allowed to use without prompting. */
 const BUILD_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
+
+/** Default model for an adversarial verify pass — stronger than the build tier. */
+const VERIFY_MODEL = "opus";
 
 /**
  * Compose the standing context handed to every agent: what app is being
@@ -178,4 +182,98 @@ export async function runTask(
       usage,
     };
   }
+}
+
+/** The adversarial reviewer prompt: try to REFUTE the done-claim, fail-closed. */
+function verifyPrompt(task: Task): string {
+  const acceptance =
+    (task.acceptance ?? []).map((a) => `  - ${a}`).join("\n") ||
+    "  (none stated explicitly — judge against the brief)";
+  return [
+    `You are an ADVERSARIAL REVIEWER. A build agent has just reported task "${task.id}" as DONE.`,
+    `Your job is to try to REFUTE that claim, not to help. You are READ-ONLY: do NOT modify, create,`,
+    `or delete any file (no Write/Edit; do not write via Bash redirection either).`,
+    ``,
+    `The task's brief:`,
+    task.brief,
+    ``,
+    `Acceptance criteria to check against:`,
+    acceptance,
+    ``,
+    `Inspect the ACTUAL repository state (read files, grep, run the test/build read-only) and decide`,
+    `whether EVERY acceptance criterion is genuinely met. Be skeptical: a plausible-looking change`,
+    `that does not actually satisfy an acceptance criterion is a FAIL.`,
+    ``,
+    `List each concrete issue as a "- " bullet (write "- none" if clean), then end with EXACTLY ONE`,
+    `final line, one of:`,
+    `  VERDICT: PASS   (only if every criterion is genuinely met)`,
+    `  VERDICT: FAIL   (if any criterion is unmet, unverifiable, or you are unsure)`,
+    `If you cannot positively confirm a PASS for ANY reason, you MUST answer VERDICT: FAIL.`,
+  ].join("\n");
+}
+
+/**
+ * Adversarially verify a sensitive task after its build agent reported success.
+ * A SECOND, READ-ONLY agent (Write/Edit withheld so it judges rather than
+ * silently fixing), defaulting to opus. FAIL-CLOSED: any error, timeout, or
+ * missing verdict yields a not-passed record.
+ */
+export async function runVerify(
+  task: Task,
+  plan: BuildPlan,
+  repoPath: string,
+  onMessage?: (text: string) => void,
+  integrations?: AgentIntegrations,
+): Promise<VerifyRecord> {
+  const start = Date.now();
+  const model = task.verifyModel ?? VERIFY_MODEL;
+  let usage: TaskUsage | undefined;
+  let finalText = "";
+  try {
+    for await (const message of query({
+      prompt: verifyPrompt(task),
+      options: {
+        cwd: repoPath,
+        model,
+        systemPrompt: { type: "preset", preset: "claude_code", append: sharedContext(plan) },
+        // Read-only: NO Write/Edit. Bash stays for tests/greps.
+        allowedTools: ["Read", "Grep", "Glob", "Bash", ...(integrations?.extraAllowedTools ?? [])],
+        permissionMode: "acceptEdits",
+        maxTurns: 30,
+        ...(integrations?.mcpServers ? { mcpServers: integrations.mcpServers } : {}),
+      },
+    })) {
+      if (message.type === "assistant") {
+        for (const block of message.message.content) {
+          if (block.type === "text" && onMessage) onMessage(block.text);
+        }
+      }
+      if (message.type === "result") {
+        usage = readUsage(message);
+        if (message.subtype === "success") finalText = message.result ?? "";
+      }
+    }
+  } catch (e) {
+    return {
+      passed: false,
+      verdict: `verify errored: ${(e as Error).message}`,
+      findings: [],
+      triggeredBy: verifyTriggers(task),
+      model,
+      durationMs: Date.now() - start,
+      usage,
+      at: new Date().toISOString(),
+    };
+  }
+  const parsed = parseVerdict(finalText);
+  return {
+    passed: parsed.passed,
+    verdict: parsed.verdict,
+    findings: parsed.findings,
+    triggeredBy: verifyTriggers(task),
+    model,
+    durationMs: Date.now() - start,
+    usage,
+    at: new Date().toISOString(),
+  };
 }

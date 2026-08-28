@@ -125,6 +125,10 @@ tasks:
     phase: "6-qa"
     executor: agent
     title: Pre-launch QA sweep
+    # sensitivity (P7 + P10): a read-only reviewer adversarially verifies this
+    # task's acceptance before it can count as done, and the model is floored up.
+    # Recognized tags: security | compliance | send (+ consent | money | secrets).
+    sensitivity: [security]
     deps: [landing-page, backend-proxy]
     prompt: >
       Verify the page serves, the form submits end to end in staging, and no
