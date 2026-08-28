@@ -88,6 +88,28 @@ Fleet: add `RUN npm i -g @openai/codex` to `Dockerfile.job`.
 missing binary or key fails that task **soft** (a `failed` result with an
 actionable message) — it never crashes the run.
 
+**Credentials (vault):** the key lives in GCP Secret Manager as **`global-openai`**
+(project `digitalsolomon-creator`), registered in `_tools/vault/vault.map.json`
+under both `OPENAI_API_KEY` and `CODEX_API_KEY`.
+- **Fleet:** `cloud-job.ts` fetches `global-openai` at run start (alongside
+  n8n/vapi/github) and sets both env vars for codex tasks — no key in the image.
+- **Local:** `loadSecrets(...)` populates them from the same secret, or export
+  `OPENAI_API_KEY` yourself.
+
+Create/rotate the secret (you paste the value — it never touches this repo):
+```powershell
+$k = Read-Host "OpenAI API key" -AsSecureString
+$plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+  [Runtime.InteropServices.Marshal]::SecureStringToBSTR($k))
+gcloud secrets create global-openai --project digitalsolomon-creator `
+  --replication-policy=automatic 2>$null   # ignore "already exists"
+$plain | gcloud secrets versions add global-openai `
+  --project digitalsolomon-creator --data-file=-
+Remove-Variable plain, k
+```
+The Cloud Run Job's service account needs `roles/secretmanager.secretAccessor`
+on `global-openai` (same as the other `global-*` secrets).
+
 **Invocation** (built by `buildCodexArgs`, all deterministic):
 ```
 codex exec --json --skip-git-repo-check --sandbox workspace-write -C <repo> [-m <model>] "<prompt>"

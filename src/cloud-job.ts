@@ -168,16 +168,22 @@ async function main() {
   };
   const slotId = (s: string) => s.replace(/[^a-zA-Z0-9_-]+/g, "-");
 
-  const [ghlPit, ghlLocation, n8nKey, vapiKey, githubPat] = await Promise.all([
+  const [ghlPit, ghlLocation, n8nKey, vapiKey, githubPat, openaiKey] = await Promise.all([
     secretVal(slotId(`${projectDocId}/ghl-pit`)),
     secretVal(slotId(`${projectDocId}/ghl-location`)),
     secretVal("global-n8n"),
     secretVal("global-vapi"),
     secretVal("global-github"),
+    secretVal("global-openai"),
   ]);
   if (n8nKey) { process.env.N8N_API_KEY = n8nKey; process.env.N8N_BASE_URL = "https://automation.digitalsolomon.com"; }
   if (vapiKey) process.env.VAPI_API_KEY = vapiKey;
   if (githubPat) process.env.GITHUB_TOKEN = githubPat;
+  // OpenAI key powers `executor: codex` tasks (codex exec). Set BOTH the standard
+  // OpenAI var and Codex's own var so whichever the CLI honors works. This bills
+  // OpenAI directly — OUT OF BAND from the run's USD cost cap, which brakes only
+  // Anthropic spend (see codex.ts header). A codex task with no key fails soft.
+  if (openaiKey) { process.env.OPENAI_API_KEY = openaiKey; process.env.CODEX_API_KEY = openaiKey; }
 
   const integrations = ghlPit && ghlLocation
     ? {
@@ -193,7 +199,8 @@ async function main() {
     : undefined;
   log("INFO",
     `integrations: ghl-mcp=${integrations ? "on (one sub-account)" : "off"}, ` +
-    `n8n=${n8nKey ? "on" : "off"}, vapi=${vapiKey ? "on" : "off"}, github=${githubPat ? "on" : "off"}`,
+    `n8n=${n8nKey ? "on" : "off"}, vapi=${vapiKey ? "on" : "off"}, github=${githubPat ? "on" : "off"}, ` +
+    `codex/openai=${openaiKey ? "on" : "off"}`,
   );
 
   // 3) Execute, streaming every task transition into the run doc.

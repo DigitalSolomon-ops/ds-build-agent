@@ -40,6 +40,20 @@ COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 COPY src ./src
 RUN npx tsc
+
+# --- Second coding brain + headless browser (opt-in plan features) ---
+# OpenAI Codex CLI powers `executor: codex` tasks (`codex exec`). Auth is injected
+# at runtime from Secret Manager (global-openai -> OPENAI_API_KEY/CODEX_API_KEY,
+# see cloud-job.ts) — no key is baked into the image.
+RUN npm i -g @openai/codex@latest
+# Playwright MCP + Chromium power `browser: true` tasks (headless clicking).
+# NOTE: `install --with-deps chromium` pulls a large set of apt libraries and
+# meaningfully increases image size — the cost of real in-fleet browser control.
+RUN npm i -g @playwright/mcp@latest \
+  && npx playwright install --with-deps chromium
+# Resolve the pre-installed MCP (no runtime `@latest` fetch per build).
+ENV PLAYWRIGHT_MCP_ARGS="@playwright/mcp --headless --isolated"
+
 ENV NODE_ENV=production
 # /workspace is the ephemeral build area for the plan's app repo.
 RUN mkdir -p /workspace
