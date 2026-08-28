@@ -1,11 +1,9 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { BuildPlan, Task, TaskResult, TaskUsage } from "./types.js";
+import { explainModel } from "./model.js";
 
 /** Tools each build agent is allowed to use without prompting. */
 const BUILD_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
-
-/** Default model alias for build tasks (plans/tasks may override). */
-const DEFAULT_MODEL = "sonnet";
 
 /**
  * Compose the standing context handed to every agent: what app is being
@@ -114,7 +112,15 @@ export async function runTask(
   integrations?: AgentIntegrations,
 ): Promise<TaskResult> {
   const start = Date.now();
-  const model = task.model ?? plan.model ?? DEFAULT_MODEL;
+  // Resolve the model, flooring it up when the task's sensitivity demands it.
+  const decision = explainModel(task, plan);
+  const model = decision.resolved;
+  if (decision.escalated) {
+    console.error(
+      `[model] escalated ${decision.base} -> ${decision.resolved} for "${task.id}" ` +
+        `(sensitivity: ${decision.tags.join(", ")})`,
+    );
+  }
   // Declared outside the try so a throw after the result message still
   // reports what was already spent.
   let usage: TaskUsage | undefined;

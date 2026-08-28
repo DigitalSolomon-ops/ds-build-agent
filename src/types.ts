@@ -36,6 +36,12 @@ export interface Task {
   acceptance?: string[];
   /** Optional per-task model override (defaults to the plan/global model). */
   model?: string;
+  /**
+   * Risk tags (e.g. "compliance", "send", "secrets"). ONE shared field: it floors
+   * the model up (see model.ts) and gates the adversarial verify pass (P7). See
+   * SENSITIVITY_FLOOR in model.ts for the recognized vocabulary.
+   */
+  sensitivity?: string[];
 }
 
 /** Machine-enforceable pieces of a plan's deploy policy. */

@@ -117,6 +117,24 @@ test("TRAP 3: top-level `deploy_policy.commit_after_each_task` warns", () => {
   assert.match(warnings[0], /worker_defaults/);
 });
 
+test("sensitivity: scalar and list both normalize to a lowercased string[], zero warnings", () => {
+  const scalar = { project: { name: "x" }, tasks: [{ id: "a", prompt: "do", sensitivity: "Compliance" }] };
+  const list = { project: { name: "x" }, tasks: [{ id: "a", prompt: "do", sensitivity: ["compliance"] }] };
+  assert.deepEqual(collectPlanWarnings(scalar), []);
+  assert.deepEqual(collectPlanWarnings(list), []);
+  assert.deepEqual(validatePlan(scalar, { quiet: true }).tasks[0].sensitivity, ["compliance"]);
+  assert.deepEqual(validatePlan(list, { quiet: true }).tasks[0].sensitivity, ["compliance"]);
+});
+
+test("sensitivity: an unrecognized tag value warns once (and still loads)", () => {
+  const plan = { project: { name: "x" }, tasks: [{ id: "a", prompt: "do", sensitivity: "complaince" }] };
+  const w = collectPlanWarnings(plan);
+  assert.equal(w.length, 1, `expected one warning, got: ${JSON.stringify(w)}`);
+  assert.match(w[0], /complaince/); // names the bad value
+  assert.match(w[0], /compliance/); // lists the recognized tags
+  assert.doesNotThrow(() => validatePlan(plan, { quiet: true }));
+});
+
 test("canonical template loads clean with zero warnings", () => {
   const templatePath = new URL("../examples/plan-template.yaml", import.meta.url);
   const raw = parseYaml(readFileSync(templatePath, "utf8"));

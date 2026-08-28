@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import type { BuildPlan, DeployPolicy, Executor, Task } from "./types.js";
+import { RECOGNIZED_SENSITIVITIES } from "./model.js";
 
 /** Thrown when a plan file is structurally invalid. */
 export class PlanError extends Error {}
@@ -124,7 +125,18 @@ const TASK_KEYS = new Set([
   "acceptance",
   "auto",
   "outputs",
+  "sensitivity",
 ]);
+
+/** Accept a scalar or a list; trim, lower-case, drop blanks. Undefined if empty. */
+function normalizeSensitivity(v: unknown): string[] | undefined {
+  if (v === undefined || v === null) return undefined;
+  const arr = Array.isArray(v) ? v : [v];
+  const out = arr
+    .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    .map((x) => x.trim().toLowerCase());
+  return out.length ? out : undefined;
+}
 
 /**
  * Collect every key the harness will ignore, as human-readable warning strings.
@@ -190,6 +202,18 @@ export function collectPlanWarnings(raw: unknown): string[] {
           continue;
         }
         warnings.push(`task "${label}": key \`${key}\` is not read by the harness and will be ignored.`);
+      }
+      // Loud-on-drift for sensitivity VALUES (the key itself is recognized above):
+      // an unrecognized tag floors nothing / gates nothing, so name it.
+      const sens = normalizeSensitivity(task.sensitivity);
+      if (sens) {
+        const unknown = sens.filter((tag) => !RECOGNIZED_SENSITIVITIES.has(tag));
+        if (unknown.length) {
+          warnings.push(
+            `task "${label}": unrecognized sensitivity ${JSON.stringify(unknown)} — ` +
+              `recognized: ${[...RECOGNIZED_SENSITIVITIES].join(", ")}.`,
+          );
+        }
       }
     });
   }
@@ -278,6 +302,7 @@ function parseTask(t: unknown, i: number, ids: Set<string>): Task {
     outputs: looseStrArray(task.outputs),
     acceptance: looseStrArray(task.acceptance),
     model: str(task.model),
+    sensitivity: normalizeSensitivity(task.sensitivity),
   };
 }
 
