@@ -194,6 +194,46 @@ export function collectPlanWarnings(raw: unknown): string[] {
     });
   }
 
+  // ── launch-gate integrity ──
+  // A declared `launch_gate` hardcodes the 6→7 phase gate (see parsePolicy): the
+  // gate WAITS on agent tasks whose phase starts with "6" and HOLDS tasks whose
+  // phase starts with "7". If the plan carries the key but no task sits in the
+  // gate phase (or the gated phase), the gate silently protects nothing — the
+  // exact class of error this pass exists to catch. Prefixes match parsePolicy.
+  if (
+    typeof p.deploy_policy === "object" &&
+    p.deploy_policy !== null &&
+    (p.deploy_policy as Record<string, unknown>).launch_gate !== undefined &&
+    Array.isArray(p.tasks)
+  ) {
+    const GATE_PHASE = "6";
+    const GATED_PHASE = "7";
+    const phaseOf = (t: unknown): string =>
+      typeof t === "object" && t !== null && typeof (t as Record<string, unknown>).phase === "string"
+        ? ((t as Record<string, unknown>).phase as string)
+        : "";
+    // Executor defaults to "agent" when absent (parseTask), so a missing executor
+    // counts as an agent task — the same rule the gate enforcement uses.
+    const isAgent = (t: unknown): boolean =>
+      typeof t === "object" &&
+      t !== null &&
+      ((t as Record<string, unknown>).executor ?? "agent") === "agent";
+    const hasGateAgentTask = p.tasks.some((t) => phaseOf(t).startsWith(GATE_PHASE) && isAgent(t));
+    const hasGatedTask = p.tasks.some((t) => phaseOf(t).startsWith(GATED_PHASE));
+    if (!hasGateAgentTask) {
+      warnings.push(
+        `\`deploy_policy.launch_gate\` is declared but no agent task has a phase starting with ` +
+          `"${GATE_PHASE}"; the ${GATE_PHASE}→${GATED_PHASE} launch gate would gate nothing.`,
+      );
+    }
+    if (!hasGatedTask) {
+      warnings.push(
+        `\`deploy_policy.launch_gate\` is declared but no task has a phase starting with ` +
+          `"${GATED_PHASE}"; nothing sits behind the launch gate.`,
+      );
+    }
+  }
+
   return warnings;
 }
 

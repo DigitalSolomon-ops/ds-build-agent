@@ -39,10 +39,48 @@ test("clean plan produces zero warnings and validates", () => {
         outputs: [],
         acceptance: [],
       },
+      // launch_gate is declared above, so a clean plan must actually have the
+      // gate phase (an agent task in "6") and the gated phase ("7"); otherwise
+      // the gate protects nothing and the integrity check fires.
+      { id: "qa", phase: "6-qa", executor: "agent", prompt: "qa sweep", deps: ["a"] },
+      { id: "go", phase: "7-production", executor: "human", prompt: "cutover", deps: ["qa"] },
     ],
   };
   assert.deepEqual(collectPlanWarnings(plan), []);
   assert.doesNotThrow(() => validatePlan(plan, { quiet: true }));
+});
+
+test("TRAP 4: `launch_gate` with no phase-6/7 tasks warns (gate protects nothing)", () => {
+  const plan = {
+    project: { name: "x" },
+    deploy_policy: { launch_gate: true },
+    tasks: [{ id: "a", phase: "1-build", prompt: "build A" }],
+  };
+  const warnings = collectPlanWarnings(plan);
+  assert.equal(warnings.length, 2, `expected two warnings, got: ${JSON.stringify(warnings)}`);
+  assert.ok(
+    warnings.some((w) => /launch_gate/.test(w) && /gate nothing/.test(w)),
+    "missing gate phase (6) must warn",
+  );
+  assert.ok(
+    warnings.some((w) => /launch_gate/.test(w) && /behind the launch gate/.test(w)),
+    "missing gated phase (7) must warn",
+  );
+});
+
+test("launch_gate with a phase-6 HUMAN task but no agent task still warns", () => {
+  // The gate waits on AGENT tasks in phase 6; a human-only phase 6 opens instantly.
+  const plan = {
+    project: { name: "x" },
+    deploy_policy: { launch_gate: true },
+    tasks: [
+      { id: "review", phase: "6-qa", executor: "human", prompt: "eyeball it" },
+      { id: "go", phase: "7-production", executor: "human", prompt: "cutover" },
+    ],
+  };
+  const warnings = collectPlanWarnings(plan);
+  assert.equal(warnings.length, 1, `expected one warning, got: ${JSON.stringify(warnings)}`);
+  assert.match(warnings[0], /gate nothing/);
 });
 
 test("TRAP 1: a scalar `project:` warns and still hard-fails to load", () => {

@@ -9,6 +9,12 @@ Legend — repo: `dsba` = this repo (ds-build-agent), `vault` = `_tools/vault`,
 `skill` = `Projects/Skills/harness-local-dashboard` (+ installed copy), `creator` =
 `the-creator/infra`.
 
+## Progress (2026-08-28)
+
+- ✅ **P1 DONE** — `vault` branch `feat/vault-getSecretFast` (commit `473dae8`, projects-spine repo). `getSecretFast`/`loadSecretsFast` added; win32 CLI-first behind a <2.5s preflight, fail-fast reauth remedy, in-process cache. 5/5 unit tests. Additive — `getSecret`/`loadSecrets` untouched.
+- ✅ **P3 DONE** — `dsba` branch `feat/harness-improvements-from-tbfc`. The warning pass + `--strict` already existed (commit `30ec2cb`); this closed the real remaining gap: a declared `launch_gate` that gates nothing (no phase-6 agent task / no phase-7 task) now warns, and `--strict` escalates it. +3 tests (15/15 green).
+- ⬜ P2, P4–P10 pending. Next by leverage: **P2** (one progress source → STATUS/dashboard/PR).
+
 ---
 
 ## P1 — Robust secret access (biggest time sink) — repo: `vault`
