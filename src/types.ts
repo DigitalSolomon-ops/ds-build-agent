@@ -38,10 +38,13 @@ export interface Task {
   model?: string;
   /**
    * Risk tags (e.g. "compliance", "send", "secrets"). ONE shared field: it floors
-   * the model up (see model.ts) and gates the adversarial verify pass (P7). See
-   * SENSITIVITY_FLOOR in model.ts for the recognized vocabulary.
+   * the model up (see model.ts) and gates the adversarial verify pass (P7, which
+   * triggers on the subset in verify.ts VERIFY_TRIGGERS). See SENSITIVITY_FLOOR in
+   * model.ts for the recognized vocabulary.
    */
   sensitivity?: string[];
+  /** Optional model for THIS task's adversarial verify pass (defaults to opus). */
+  verifyModel?: string;
 }
 
 /** Machine-enforceable pieces of a plan's deploy policy. */
@@ -112,6 +115,30 @@ export interface TaskUsage {
   turns: number;
 }
 
+/**
+ * Record of an adversarial verify pass (P7). Attached to a sensitive task's
+ * result. FAIL-CLOSED: `passed` is false unless an explicit PASS verdict was
+ * parsed, so a truncated or confused verifier reads as failure, never a silent
+ * pass. Its `usage` is the verify pass's OWN bill — kept separate from the build
+ * usage so cost sums don't double-count.
+ */
+export interface VerifyRecord {
+  passed: boolean;
+  /** The verifier's one-line verdict (or why it failed to produce one). */
+  verdict: string;
+  /** Concrete issues raised (empty on a clean pass). */
+  findings: string[];
+  /** Which sensitivity tags triggered this pass. */
+  triggeredBy: string[];
+  /** Model the verifier ran at. */
+  model: string;
+  durationMs: number;
+  /** The verify pass's own cost, separate from the build task's usage. */
+  usage?: TaskUsage;
+  /** ISO timestamp recorded. */
+  at: string;
+}
+
 /** Result of resolving a single task. */
 export interface TaskResult {
   taskId: string;
@@ -133,4 +160,10 @@ export interface TaskResult {
    * tasks, and for an agent task that died before the SDK emitted a result.
    */
   usage?: TaskUsage;
+  /**
+   * Adversarial verify pass (P7). Present only for a sensitive agent task in a
+   * real run. `status === "success"` for a sensitive task IMPLIES
+   * `verify?.passed === true` — the gate downgrades it to "failed" otherwise.
+   */
+  verify?: VerifyRecord;
 }

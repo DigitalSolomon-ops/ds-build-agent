@@ -126,6 +126,7 @@ const TASK_KEYS = new Set([
   "auto",
   "outputs",
   "sensitivity",
+  "verify_model",
 ]);
 
 /** Accept a scalar or a list; trim, lower-case, drop blanks. Undefined if empty. */
@@ -303,6 +304,7 @@ function parseTask(t: unknown, i: number, ids: Set<string>): Task {
     acceptance: looseStrArray(task.acceptance),
     model: str(task.model),
     sensitivity: normalizeSensitivity(task.sensitivity),
+    verifyModel: str(task.verify_model),
   };
 }
 
