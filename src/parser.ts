@@ -127,6 +127,7 @@ const TASK_KEYS = new Set([
   "outputs",
   "sensitivity",
   "verify_model",
+  "scope",
 ]);
 
 /** Accept a scalar or a list; trim, lower-case, drop blanks. Undefined if empty. */
@@ -305,6 +306,7 @@ function parseTask(t: unknown, i: number, ids: Set<string>): Task {
     model: str(task.model),
     sensitivity: normalizeSensitivity(task.sensitivity),
     verifyModel: str(task.verify_model),
+    scope: strArray(task.scope, `Task "${task.id}" \`scope\``),
   };
 }
 

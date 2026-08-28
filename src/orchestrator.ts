@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import type { BuildPlan, Task, TaskResult, VerifyRecord } from "./types.js";
 import { runTask, runVerify, type AgentIntegrations } from "./agent.js";
 import { isSensitive, gateSensitiveResult, verifyTriggers } from "./verify.js";
+import { gateScopeResult } from "./scope.js";
 
 const exec = promisify(execFile);
 
@@ -194,6 +195,17 @@ export async function orchestrate(
 
           run
             .then(async (result) => {
+              // W3: a scoped task that wrote outside its declared boundary is
+              // downgraded to failed BEFORE verify or commit — so it neither
+              // lands a rollback commit nor unblocks dependents. Guarded so an
+              // unscoped task or a dry-run is byte-for-byte the pre-scope path.
+              if (!opts.dryRun && result.status === "success" && task.scope?.length) {
+                const gated = gateScopeResult(task, result);
+                if (gated.status !== "success") {
+                  opts.onEvent?.({ type: "task-log", task, text: gated.error! });
+                }
+                result = gated;
+              }
               // P7: a sensitive task must survive an adversarial verify pass before
               // it can count as done. Guarded so an unflagged task or a dry-run is
               // byte-for-byte the pre-P7 path. Runs BEFORE the commit so a failed

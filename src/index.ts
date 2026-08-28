@@ -6,6 +6,7 @@ import { orchestrate } from "./orchestrator.js";
 import { createStateWriter } from "./state-writer.js";
 import { renderDashboard } from "./dashboard.js";
 import { renderStatus } from "./status.js";
+import { analyzeGateBattery } from "./gate-battery.js";
 import type { TaskResult } from "./types.js";
 
 interface Cli {
@@ -167,6 +168,10 @@ async function main() {
   console.log(`▸ Building in: ${repoPath}`);
   console.log(`▸ Concurrency: ${cli.concurrency}${cli.dryRun ? "   [DRY RUN — no agents, no writes]" : ""}\n`);
 
+  // Gate battery (whetstone W1): how much of the build the operator can unlock
+  // by clearing gates up front, and which gates legitimately wait for the build.
+  printGateBattery(plan);
+
   const started = Date.now();
 
   // Opt-in run-state emitter (behind --state). When disabled this stays null
@@ -232,6 +237,29 @@ async function main() {
   // informational and never change the exit code.
   const strictFail = cli.strict && planWarnings.length > 0;
   process.exit(failed > 0 || strictFail ? 1 : 0);
+}
+
+/**
+ * Print the gate-battery readout: the front-loadable gates the operator clears
+ * up front, how many agent tasks then build unattended, and the sequential
+ * gates that legitimately wait for the build. Silent when a plan has no gates.
+ */
+function printGateBattery(plan: import("./types.js").BuildPlan): void {
+  const b = analyzeGateBattery(plan);
+  if (b.battery.length === 0 && b.sequentialGates.length === 0) return;
+  console.log(
+    `▸ Gate battery: ${b.battery.length} upfront → ` +
+      `${b.unattendedAgentCount}/${b.totalAgentCount} agent tasks then build unattended; ` +
+      `${b.sequentialGates.length} sequential (after the build).`,
+  );
+  if (b.battery.length) console.log(`   ⏹ clear first: ${b.battery.map((t) => t.id).join(", ")}`);
+  if (b.sequentialGates.length)
+    console.log(`   ⏳ after build: ${b.sequentialGates.map((t) => t.id).join(", ")}`);
+  if (b.lateGates.length)
+    console.log(
+      `   ⚠ could be front-loaded (need nothing built): ${b.lateGates.map((t) => t.id).join(", ")}`,
+    );
+  console.log("");
 }
 
 function report(

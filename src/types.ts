@@ -45,6 +45,17 @@ export interface Task {
   sensitivity?: string[];
   /** Optional model for THIS task's adversarial verify pass (defaults to opus). */
   verifyModel?: string;
+  /**
+   * Write-boundary. When set, this task may only write files matching one of
+   * these globs; a successful agent task that wrote outside its scope is
+   * downgraded to "failed" before it can commit or unblock dependents (see
+   * scope.ts). Supports `*` (within a segment), `**` (across segments), exact
+   * paths, and a trailing "/" for "this directory and everything under it".
+   * Absent = unconstrained (the pre-scope behaviour), so existing plans are
+   * unaffected. Enforcement observes the agent's Write/Edit tool calls; writes
+   * made only through a Bash shell are not yet tracked (documented gap).
+   */
+  scope?: string[];
 }
 
 /** Machine-enforceable pieces of a plan's deploy policy. */
@@ -166,4 +177,11 @@ export interface TaskResult {
    * `verify?.passed === true` — the gate downgrades it to "failed" otherwise.
    */
   verify?: VerifyRecord;
+  /**
+   * Repo-relative paths this task wrote, observed from the agent's Write/Edit
+   * tool calls (scope.ts gates against them). Present only for an agent task in
+   * a real run; undefined for deferred/skipped/dry-run. An empty array means
+   * "ran but wrote nothing via Write/Edit" — not the same as unknown.
+   */
+  filesWritten?: string[];
 }
