@@ -32,6 +32,26 @@ function writtenPath(block: unknown, repoPath: string): string | undefined {
 /** Tools each build agent is allowed to use without prompting. */
 const BUILD_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
 
+/**
+ * Environment for the Claude Code subprocess: inherit the parent env, but
+ * default its NON-ESSENTIAL traffic OFF.
+ *
+ * The CLI fires background calls (telemetry / update-check / statsig) at turn
+ * start. On a network that allows api.anthropic.com but blocks those endpoints
+ * — observed on this native-Windows machine, and any locked-down egress — that
+ * call hangs and the whole turn stalls right after `system init`, so every task
+ * times out. Disabling it makes local runs deterministic; it is harmless in the
+ * container (where nothing was blocked). Overridable: an operator who sets
+ * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC themselves keeps their value.
+ */
+function claudeEnv(): Record<string, string | undefined> {
+  return {
+    ...process.env,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:
+      process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ?? "1",
+  };
+}
+
 /** Default model for an adversarial verify pass — stronger than the build tier. */
 const VERIFY_MODEL = "opus";
 
@@ -109,6 +129,7 @@ export async function runTask(
         allowedTools: [...BUILD_TOOLS, ...(eff?.extraAllowedTools ?? [])],
         permissionMode: "acceptEdits",
         maxTurns: 60,
+        env: claudeEnv(),
         ...(eff?.mcpServers ? { mcpServers: eff.mcpServers } : {}),
       },
     })) {
@@ -213,6 +234,7 @@ export async function runVerify(
         allowedTools: ["Read", "Grep", "Glob", "Bash", ...(integrations?.extraAllowedTools ?? [])],
         permissionMode: "acceptEdits",
         maxTurns: 30,
+        env: claudeEnv(),
         ...(integrations?.mcpServers ? { mcpServers: integrations.mcpServers } : {}),
       },
     })) {
