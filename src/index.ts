@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { resolve, join, dirname } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { loadPlan, PlanError } from "./parser.js";
+import { resolveBuildPath } from "./paths.js";
 import { orchestrate } from "./orchestrator.js";
 import { createStateWriter } from "./state-writer.js";
 import { renderDashboard } from "./dashboard.js";
@@ -36,6 +37,12 @@ interface Cli {
    * the build repo). A path = enabled there.
    */
   status?: string;
+  /**
+   * In-place build: an EXISTING repo to build INTO (extend), instead of a fresh
+   * `<out>/<name>/` folder. When set, agents run with that repo's real code in
+   * view, and harness telemetry (state/dashboard/STATUS) stays outside it.
+   */
+  repo?: string;
 }
 
 function parseArgs(argv: string[]): Cli {
@@ -49,10 +56,11 @@ function parseArgs(argv: string[]): Cli {
   if (!planPath) {
     throw new Error(
       "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run] [--strict] " +
-        "[--state [dir]] [--dashboard [path]] [--status [path]]",
+        "[--state [dir]] [--dashboard [path]] [--status [path]] [--repo <existing-repo>]",
     );
   }
   const out = get("--out") ?? join(process.cwd(), "builds");
+  const repo = get("--repo");
   const concurrency = Number(get("--concurrency") ?? "3");
   const onlyRaw = get("--only");
   // `--state` takes an optional directory. Bare `--state` (or followed by
@@ -87,6 +95,7 @@ function parseArgs(argv: string[]): Cli {
     state,
     dashboard,
     status,
+    repo,
   };
 }
 
@@ -115,7 +124,8 @@ async function main() {
   }
 
   const safeName = plan.name.replace(/[^\w.-]+/g, "-");
-  const repoPath = join(cli.repoPath, safeName);
+  // Build target: an existing repo in-place (--repo) or the greenfield default.
+  const repoPath = resolveBuildPath(cli.repo, cli.repoPath, safeName);
   // The state dir lives OUTSIDE the build repo (next to builds/<name>/), so
   // commit_after_each_task never captures harness telemetry. Hoisted (exact
   // expression) so both the state writer and STATUS.md's default can reference it.
@@ -129,7 +139,7 @@ async function main() {
   const dashboardPath = dashboardRequested
     ? cli.dashboard
       ? resolve(cli.dashboard)
-      : join(repoPath, "dashboard.html")
+      : join(cli.repo ? stateDir : repoPath, "dashboard.html")
     : undefined;
 
   // STATUS.md resume doc. Requested via --status or implicitly with --state.
@@ -162,7 +172,16 @@ async function main() {
     process.exit(1);
   }
 
-  if (!cli.dryRun) mkdirSync(repoPath, { recursive: true });
+  if (!cli.dryRun) {
+    // --repo builds into an EXISTING repo; a missing path is an operator typo,
+    // not a cue to create a fresh one (that is what the default --out path is for).
+    if (cli.repo && !existsSync(repoPath)) {
+      console.error(`✗ --repo path does not exist: ${repoPath}`);
+      console.error("  Point --repo at an existing repo, or omit it to build fresh under --out.");
+      process.exit(1);
+    }
+    mkdirSync(repoPath, { recursive: true });
+  }
 
   const agentCount = plan.tasks.filter((t) => isBuildExecutor(t.executor) && t.auto).length;
   const codexCount = plan.tasks.filter((t) => t.executor === "codex" && t.auto).length;
@@ -171,7 +190,7 @@ async function main() {
     (codexCount ? `, ${codexCount} via codex` : "") +
     (browserCount ? `, ${browserCount} with browser` : "");
   console.log(`▸ Plan:        ${plan.name} (${plan.tasks.length} tasks, ${agentCount} agent-built${mix})`);
-  console.log(`▸ Building in: ${repoPath}`);
+  console.log(`▸ ${cli.repo ? "Repo (in-place)" : "Building in"}: ${repoPath}`);
   console.log(`▸ Concurrency: ${cli.concurrency}${cli.dryRun ? "   [DRY RUN — no agents, no writes]" : ""}\n`);
 
   // Gate battery (whetstone W1): how much of the build the operator can unlock
