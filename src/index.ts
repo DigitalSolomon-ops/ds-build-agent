@@ -3,6 +3,7 @@ import { resolve, join, dirname } from "node:path";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { loadPlan, PlanError } from "./parser.js";
 import { resolveBuildPath } from "./paths.js";
+import { resolveRunCapUsd, CostAccumulator } from "./cost.js";
 import { orchestrate } from "./orchestrator.js";
 import { createStateWriter } from "./state-writer.js";
 import { renderDashboard } from "./dashboard.js";
@@ -43,6 +44,8 @@ interface Cli {
    * view, and harness telemetry (state/dashboard/STATUS) stays outside it.
    */
   repo?: string;
+  /** Per-run cost cap in USD (`--max-usd`); overrides the plan's max_run_usd and MAX_RUN_USD env. */
+  maxUsd?: string;
 }
 
 function parseArgs(argv: string[]): Cli {
@@ -61,6 +64,7 @@ function parseArgs(argv: string[]): Cli {
   }
   const out = get("--out") ?? join(process.cwd(), "builds");
   const repo = get("--repo");
+  const maxUsd = get("--max-usd");
   const concurrency = Number(get("--concurrency") ?? "3");
   const onlyRaw = get("--only");
   // `--state` takes an optional directory. Bare `--state` (or followed by
@@ -96,6 +100,7 @@ function parseArgs(argv: string[]): Cli {
     dashboard,
     status,
     repo,
+    maxUsd,
   };
 }
 
@@ -225,11 +230,20 @@ async function main() {
     console.log("");
   }
 
+  // Per-run cost cap — parity with the cloud runner (B2). The LOCAL CLI had none,
+  // so a `--repo` build ran to completion regardless of spend. Stop dispatching once
+  // accumulated reported cost (build + adversarial-verify passes) reaches the cap.
+  const runCapUsd = resolveRunCapUsd(plan.policy.maxRunUsd, process.env.MAX_RUN_USD, cli.maxUsd);
+  const cost = new CostAccumulator();
+  if (!cli.dryRun) console.log(`▸ Cost cap:    $${runCapUsd.toFixed(2)}   (halts dispatch when reached)\n`);
+
   const results = await orchestrate(plan, {
     repoPath,
     concurrency: cli.concurrency,
     dryRun: cli.dryRun,
+    capReached: () => cost.reached(runCapUsd),
     onEvent: (e) => {
+      if (e.type === "task-done") cost.add(e.result.usage?.costUsd, e.result.verify?.usage?.costUsd);
       stateWriter?.handleEvent(e);
       switch (e.type) {
         case "task-start":
@@ -257,6 +271,13 @@ async function main() {
 
   stateWriter?.finalize(results);
   report(results, Date.now() - started, cli.dryRun, planWarnings.length, cli.strict);
+  if (!cli.dryRun) {
+    const capped = cost.reached(runCapUsd);
+    console.log(
+      `   spent: $${cost.total.toFixed(4)} of $${runCapUsd.toFixed(2)} cap` +
+        (capped ? "  ⚠ CAP REACHED — remaining tasks were skipped" : ""),
+    );
+  }
   const failed = results.filter((r) => r.status === "failed").length;
   // --strict promotes any plan warning to a failure; without it warnings are
   // informational and never change the exit code.
