@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 const DIST = new URL("../dist/", import.meta.url);
 const { humanUpdateBlock, writeOperatorAnswers, buildOperatorContext } =
   await import(new URL("operator-writeback.js", DIST).href);
-const { sharedContext } = await import(new URL("agent.js", DIST).href);
+const { sharedContext } = await import(new URL("prompt.js", DIST).href);
 
 const checks = [];
 const check = (name, ok) => checks.push([name, !!ok]);
