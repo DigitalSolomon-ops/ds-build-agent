@@ -67,19 +67,48 @@ propagates as skipped dependents, never as a blind re-run.
 
 ## Running
 
-Requires **Node.js 18+** and `ANTHROPIC_API_KEY`.
+Requires **Node.js 18+** and a Claude login.
 
 ```powershell
 npm install
 npm run build
-node dist/index.js examples\lead-capture.plan.yaml --out .\builds --concurrency 3
+npm link            # once: puts `ds-build` on your PATH
+ds-build examples\lead-capture.plan.yaml --out .\builds --concurrency 3
 ```
+
+### Auth: subscription by default
+
+Local runs use your **Claude subscription**, not the API. Claude Code bills an
+API key whenever one is in its environment, so the harness strips
+`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from every agent it spawns. Nothing
+is billed per token; usage counts against your plan's limits (watch them when
+running `--concurrency 3` or more).
+
+One-time setup, for unattended runs: create a long-lived subscription token and
+store it as a user environment variable.
+
+```powershell
+& .\node_modules\@anthropic-ai\claude-agent-sdk-win32-x64\claude.exe setup-token
+[Environment]::SetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", "<paste the token>", "User")
+```
+
+Open a new terminal afterwards. The harness refuses to start in subscription
+mode when it finds neither that token nor a stored Claude Code login.
+
+| Mode | When | Billing |
+|---|---|---|
+| `subscription` | default for local runs; `--subscription`; `DS_BUILD_AUTH=subscription` | your Claude plan |
+| `api` | default inside Cloud Run (`solomon-runner`); `--api`; `DS_BUILD_AUTH=api` | `ANTHROPIC_API_KEY`, per token |
+
+The `$` cost cap still applies in subscription mode. There it is the
+API-equivalent cost, so it limits how much of your plan one run can use.
 
 - `--repo <dir>` — build in-place into an existing repo.
 - `--dashboard [path]` — emit an auto-updating local status page
   (`builds/<name>/dashboard.html`) with human gates surfaced as operator
   instructions.
 - `--dry-run` — routing simulation; no agents, no spend.
+- `--subscription` / `--api` — override the auth mode (see above).
 
 Exit code is non-zero if any task failed or was skipped.
 

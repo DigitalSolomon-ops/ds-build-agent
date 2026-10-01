@@ -1,5 +1,6 @@
 import { isAbsolute, relative } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { agentAuthEnv, currentAuthMode } from "./auth.js";
 import type { BuildPlan, Task, TaskResult, TaskUsage, VerifyRecord } from "./types.js";
 import { explainModel } from "./model.js";
 import { normalizePath } from "./scope.js";
@@ -45,8 +46,10 @@ const BUILD_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
  * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC themselves keeps their value.
  */
 function claudeEnv(): Record<string, string | undefined> {
+  // Subscription mode (the local default) strips API credentials so Claude Code
+  // falls back to this machine's subscription login. See auth.ts.
   return {
-    ...process.env,
+    ...agentAuthEnv(currentAuthMode(), process.env),
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:
       process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ?? "1",
   };

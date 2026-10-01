@@ -11,6 +11,7 @@ import { renderStatus } from "./status.js";
 import { analyzeGateBattery } from "./gate-battery.js";
 import type { TaskResult } from "./types.js";
 import { isBuildExecutor } from "./types.js";
+import { resolveAuthMode, subscriptionLoginProblem, type AuthMode } from "./auth.js";
 
 interface Cli {
   planPath: string;
@@ -46,6 +47,8 @@ interface Cli {
   repo?: string;
   /** Per-run cost cap in USD (`--max-usd`); overrides the plan's max_run_usd and MAX_RUN_USD env. */
   maxUsd?: string;
+  /** How agents authenticate: the Claude subscription (local default) or ANTHROPIC_API_KEY. */
+  auth: AuthMode;
 }
 
 function parseArgs(argv: string[]): Cli {
@@ -59,7 +62,7 @@ function parseArgs(argv: string[]): Cli {
   if (!planPath) {
     throw new Error(
       "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run] [--strict] " +
-        "[--state [dir]] [--dashboard [path]] [--status [path]] [--repo <existing-repo>]",
+        "[--state [dir]] [--dashboard [path]] [--status [path]] [--repo <existing-repo>] [--subscription | --api]",
     );
   }
   const out = get("--out") ?? join(process.cwd(), "builds");
@@ -101,6 +104,7 @@ function parseArgs(argv: string[]): Cli {
     status,
     repo,
     maxUsd,
+    auth: resolveAuthMode({ subscription: has("--subscription"), api: has("--api") }),
   };
 }
 
@@ -171,10 +175,21 @@ async function main() {
     console.log(`▸ STATUS:      ${statusPath}   [plan view]`);
   }
 
-  if (!cli.dryRun && !process.env.ANTHROPIC_API_KEY) {
-    console.error("✗ ANTHROPIC_API_KEY is not set. The Agent SDK needs it to run.");
-    console.error("  (Use --dry-run to preview the execution plan without a key.)");
-    process.exit(1);
+  // Pin the auth mode for every agent this process spawns (agent.ts reads it).
+  process.env.DS_BUILD_AUTH = cli.auth;
+  if (!cli.dryRun) {
+    if (cli.auth === "api" && !process.env.ANTHROPIC_API_KEY) {
+      console.error("✗ --api needs ANTHROPIC_API_KEY. Drop --api to run on your Claude subscription.");
+      console.error("  (Use --dry-run to preview the execution plan without any login.)");
+      process.exit(1);
+    }
+    if (cli.auth === "subscription") {
+      const problem = subscriptionLoginProblem();
+      if (problem) {
+        console.error(`✗ ${problem}`);
+        process.exit(1);
+      }
+    }
   }
 
   if (!cli.dryRun) {
@@ -196,7 +211,12 @@ async function main() {
     (browserCount ? `, ${browserCount} with browser` : "");
   console.log(`▸ Plan:        ${plan.name} (${plan.tasks.length} tasks, ${agentCount} agent-built${mix})`);
   console.log(`▸ ${cli.repo ? "Repo (in-place)" : "Building in"}: ${repoPath}`);
-  console.log(`▸ Concurrency: ${cli.concurrency}${cli.dryRun ? "   [DRY RUN — no agents, no writes]" : ""}\n`);
+  console.log(`▸ Concurrency: ${cli.concurrency}${cli.dryRun ? "   [DRY RUN — no agents, no writes]" : ""}`);
+  console.log(
+    `▸ Auth:        ${cli.auth === "subscription"
+      ? "Claude subscription (API key stripped from agents; no API billing)"
+      : "ANTHROPIC_API_KEY (billed per token)"}\n`,
+  );
 
   // Gate battery (whetstone W1): how much of the build the operator can unlock
   // by clearing gates up front, and which gates legitimately wait for the build.
@@ -235,7 +255,13 @@ async function main() {
   // accumulated reported cost (build + adversarial-verify passes) reaches the cap.
   const runCapUsd = resolveRunCapUsd(plan.policy.maxRunUsd, process.env.MAX_RUN_USD, cli.maxUsd);
   const cost = new CostAccumulator();
-  if (!cli.dryRun) console.log(`▸ Cost cap:    $${runCapUsd.toFixed(2)}   (halts dispatch when reached)\n`);
+  if (!cli.dryRun)
+    console.log(
+      `▸ Cost cap:    $${runCapUsd.toFixed(2)}   (halts dispatch when reached` +
+        (cli.auth === "subscription"
+          ? "; API-equivalent cost, nothing is billed: it limits how much of your plan's usage one run takes)\n"
+          : ")\n"),
+    );
 
   const results = await orchestrate(plan, {
     repoPath,
