@@ -81,6 +81,13 @@ export function validatePlan(raw: unknown, opts: ValidateOptions = {}): BuildPla
   }
   detectCycles(tasks);
 
+  // Plan-level shared_files apply to every scoped task, alongside its own.
+  const planShared = strArray(p.shared_files, "`shared_files`") ?? [];
+  for (const task of tasks) {
+    const merged = [...new Set([...(task.sharedFiles ?? []), ...planShared])];
+    task.sharedFiles = merged.length ? merged : undefined;
+  }
+
   return {
     name,
     description: str(project.description) ?? str(project.model_note),
@@ -95,7 +102,7 @@ export function validatePlan(raw: unknown, opts: ValidateOptions = {}): BuildPla
 // Every key the parser actually reads, per level. Anything a plan carries that
 // is NOT on the matching list is dropped silently by the YAML load — so we name
 // it. Keep these in lockstep with what validatePlan/parseTask/parsePolicy read.
-const TOP_LEVEL_KEYS = new Set(["project", "name", "tasks", "model", "deploy_policy"]);
+const TOP_LEVEL_KEYS = new Set(["project", "name", "tasks", "model", "deploy_policy", "shared_files"]);
 // When there is no `project:` block, project metadata lives at the top level
 // (the `project = p` fallback), so these are legitimate top-level keys too.
 const TOP_LEVEL_FALLBACK_KEYS = new Set([
@@ -129,6 +136,7 @@ const TASK_KEYS = new Set([
   "sensitivity",
   "verify_model",
   "scope",
+  "shared_files",
   "browser",
 ]);
 
@@ -311,6 +319,7 @@ function parseTask(t: unknown, i: number, ids: Set<string>): Task {
     sensitivity: normalizeSensitivity(task.sensitivity),
     verifyModel: str(task.verify_model),
     scope: strArray(task.scope, `Task "${task.id}" \`scope\``),
+    sharedFiles: strArray(task.shared_files, `Task "${task.id}" \`shared_files\``),
     // Opt-in headless browser (Claude runner). Only a literal `true` enables it.
     browser: task.browser === true ? true : undefined,
   };

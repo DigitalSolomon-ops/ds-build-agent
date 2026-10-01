@@ -72,13 +72,16 @@ export function filesOutsideScope(files: string[], scope: string[]): string[] {
  */
 export function gateScopeResult(task: Task, result: TaskResult): TaskResult {
   if (!task.scope?.length || result.status !== "success") return result;
-  const outside = filesOutsideScope(result.filesWritten ?? [], task.scope);
+  // Declared shared files (plan- or task-level `shared_files`) widen the scope
+  // of an already-scoped task; they never constrain an unscoped one.
+  const allowed = [...task.scope, ...(task.sharedFiles ?? [])];
+  const outside = filesOutsideScope(result.filesWritten ?? [], allowed);
   if (outside.length === 0) return result;
   return {
     ...result,
     status: "failed",
     error:
       `Scope violation: task "${task.id}" wrote outside its declared scope — ` +
-      `${outside.join(", ")}. Allowed: ${task.scope.join(", ")}.`,
+      `${outside.join(", ")}. Allowed: ${allowed.join(", ")}.`,
   };
 }

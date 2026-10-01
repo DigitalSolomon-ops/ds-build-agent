@@ -31,6 +31,10 @@ export function sharedContext(plan: BuildPlan): string {
     `    file (git-ignored) and documented placeholders (e.g. GHL Custom Values).`,
     `  - When a real URL/id/credential is not yet available, use a clearly-named`,
     `    placeholder and note it, rather than inventing a value.`,
+    `  - Do NOT run git commands that write history or move HEAD (git commit,`,
+    `    push, checkout, switch, reset, rebase, merge, stash, tag). The harness`,
+    `    commits your work after the task; other tasks may be editing this repo`,
+    `    at the same time. Read-only git (status, diff, log) is fine.`,
   );
   // Operator write-back: answers to prior blockers + attached documents. The
   // cloud runner assembles this from Firestore/Storage so an agent reads the

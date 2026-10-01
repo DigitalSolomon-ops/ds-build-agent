@@ -55,7 +55,8 @@ propagates as skipped dependents, never as a blind re-run.
 3. **Orchestrator** ([src/orchestrator.ts](src/orchestrator.ts)) — runs each
    task once its dependencies succeed, up to `--concurrency` at a time. A
    failed dependency skips its dependents rather than building on a broken
-   foundation. Each successful task is committed to the target repo.
+   foundation. With `worker_defaults.commit_after_each_task: true`, each
+   successful task is committed to the target repo (see *Per-task commits*).
 4. **Executors** — [src/agent.ts](src/agent.ts) wraps the Claude Agent SDK
    `query()` (headless, `permissionMode: "acceptEdits"`); tasks can instead
    route to the OpenAI Codex CLI ([src/codex.ts](src/codex.ts)) as a second
@@ -64,6 +65,44 @@ propagates as skipped dependents, never as a blind re-run.
    ride along per task: a headless Playwright browser (`browser: true`) and a
    GoHighLevel MCP endpoint scoped to one sub-account with tools narrowed to
    `mcp__ghl__*`.
+
+## Per-task commits
+
+`deploy_policy.worker_defaults.commit_after_each_task: true` gives every
+successful build task its own rollback commit, `<task-id>: <title>`. The
+harness owns commits; how much it stages depends on whether the task ran alone:
+
+- **Ran alone** (always the case at `--concurrency 1`, or when no sibling was
+  running at any point in the task's lifetime): `git add -A`, the whole working
+  tree. This includes files written only through Bash (`npm install`,
+  scaffolders) and anything an earlier task left uncommitted.
+- **Overlapped a sibling**: only the paths the task was observed writing (its
+  Write/Edit calls) are staged and committed, including deletions. A sibling's
+  half-written files are never swept into it. Bash-only writes from such a task
+  stay uncommitted until the next task that runs alone picks them up, and a
+  Codex task's writes (not observable) are handled the same way.
+- A task with nothing to stage makes no commit. Commits are serialized, so
+  concurrent tasks never race on the git index.
+
+Build agents are told not to run `git commit`/`push`/`checkout` and similar
+themselves, and the Claude runner denies those Bash commands
+(`DENIED_GIT_COMMANDS` in [src/agent.ts](src/agent.ts)).
+
+**Shared files.** A scoped task that has to touch a file many tasks share
+(`tsconfig.json`, `src/index.ts`, `package.json`) can declare it instead of
+failing with a scope violation:
+
+```yaml
+shared_files: [tsconfig.json, package.json]   # plan-level: every scoped task
+tasks:
+  - id: slides
+    scope: ["src/slides/**"]
+    shared_files: [src/index.ts]               # task-level, added to the plan's
+```
+
+`shared_files` only widens a task that already has a `scope`. When two
+concurrent tasks edit the same shared file, both edits land in whichever task
+commits first.
 
 ## Running
 

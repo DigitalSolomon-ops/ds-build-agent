@@ -81,6 +81,15 @@ export interface Task {
    * made only through a Bash shell are not yet tracked (documented gap).
    */
   scope?: string[];
+  /**
+   * Globs a SCOPED task may also write without a scope violation — files many
+   * tasks legitimately touch (tsconfig.json, src/index.ts, package.json). The
+   * union of the task's own `shared_files` and the plan's top-level
+   * `shared_files`, merged by the parser. Ignored when `scope` is unset.
+   * Note: two concurrent tasks editing the same shared file both land in
+   * whichever task commits it first.
+   */
+  sharedFiles?: string[];
 }
 
 /** Machine-enforceable pieces of a plan's deploy policy. */

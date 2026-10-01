@@ -34,6 +34,18 @@ function writtenPath(block: unknown, repoPath: string): string | undefined {
 const BUILD_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"];
 
 /**
+ * Git write commands a build agent may not run: the harness owns commits
+ * (orchestrator.gitCommit), and an agent committing or switching branches in a
+ * repo shared with concurrent siblings corrupts attribution. Permission-rule
+ * prefixes, so `git commit -m ...` is denied while `git status` still runs.
+ * Defence in depth behind the prompt rule in prompt.ts, not a sandbox: a
+ * determined `git -C . commit` spelling is not matched.
+ */
+export const DENIED_GIT_COMMANDS = [
+  "commit", "push", "checkout", "switch", "reset", "rebase", "merge", "stash", "tag",
+].map((c) => `Bash(git ${c}:*)`);
+
+/**
  * Environment for the Claude Code subprocess: inherit the parent env, but
  * default its NON-ESSENTIAL traffic OFF.
  *
@@ -130,6 +142,7 @@ export async function runTask(
         model,
         systemPrompt: { type: "preset", preset: "claude_code", append: sharedContext(plan) },
         allowedTools: [...BUILD_TOOLS, ...(eff?.extraAllowedTools ?? [])],
+        disallowedTools: DENIED_GIT_COMMANDS,
         permissionMode: "acceptEdits",
         maxTurns: 60,
         env: claudeEnv(),
