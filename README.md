@@ -40,7 +40,7 @@ vibes. Four independent mechanisms:
   required `airspace` block (repos, folders, GHL locations and pipelines). Before
   any launch, local or cloud, every resource is claimed in one Firestore
   transaction; any overlap with a live run is a hard block naming the holder
-  (`held: conflicts with fast-insurance-group on ghl_pipeline:Partner Sales`).
+  (`held: conflicts with fast-insurance-group on path:portfolios/own-products/fast-insurance-group`).
   No override exists. Claims carry a heartbeat-renewed lease, so a crashed run
   frees itself. See [docs/AIRSPACE.md](docs/AIRSPACE.md).
 
@@ -157,16 +157,17 @@ API-equivalent cost, so it limits how much of your plan one run can use.
 - `--dry-run` — routing simulation; no agents, no spend.
 - `--subscription` / `--api` — override the auth mode (see above).
 
-Exit code is non-zero if any task failed or was skipped. A real run exits 3 when
-its airspace is held by another run, and 1 when the registry cannot be reached
-(fail-closed: it never launches unchecked).
+Exit code is non-zero if any task failed or was skipped. Airspace exits: 3 when
+another run holds overlapping airspace, 4 when the run lost its airspace mid-run
+(work stopped), 5 when airspace was refused before launch (unclaimed build target,
+lease settings, clock, wrong or unreachable registry). It never launches unchecked.
+See [docs/AIRSPACE.md](docs/AIRSPACE.md).
 
 ```powershell
-ds-build sync fast-insurance-group        # queue a project in Local Builds as a dry run
+ds-build sync fast-insurance-group        # queue a project as a dry run (Send to Local Builds from the cockpit)
 ds-build airspace list                    # live claims (both lanes) + held launches
 ds-build airspace check plan.yaml         # would this plan be held right now?
 ds-build airspace draft plan.yaml         # draft an airspace block for review
-ds-build local-runner                     # run plans launched from the Local Builds page
 ```
 
 ## Cloud
