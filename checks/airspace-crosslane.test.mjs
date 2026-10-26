@@ -110,7 +110,7 @@ async function cli(argv, deps) {
   console.log = console.warn = () => {};
   console.error = (...a) => lines.push(a.join(" "));
   process.stdout.write = () => true;
-  Object.assign(process.env, { ANTHROPIC_API_KEY: "test-not-a-key", AIRSPACE_LEASE_MS: "60000", AIRSPACE_HEARTBEAT_MS: "1000" });
+  Object.assign(process.env, { ANTHROPIC_API_KEY: "test-not-a-key", AIRSPACE_LEASE_MS: "60000", AIRSPACE_HEARTBEAT_MS: "5000" });
   try {
     return { code: await CLI.main(argv, deps), errors: lines };
   } finally {

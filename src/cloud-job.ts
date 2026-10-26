@@ -57,15 +57,27 @@ export interface CloudDeps {
 }
 
 /** The running claim, so shutdown() and the fatal path can stop the work and free it. */
-let current: { release: () => Promise<void>; abort: (reason: string) => void } | undefined;
+let current: { release: () => Promise<void>; abandon: () => void; abort: (reason: string) => void } | undefined;
 
 /** Abort in-flight work, kill child trees and confirm them gone, THEN release. */
 export async function shutdown(reason: string): Promise<void> {
+  current?.abort(reason);
+  await endRun();
+}
+
+/** Kill child trees and CONFIRM them gone, then release; otherwise leave the claim to its lease. */
+async function endRun(): Promise<void> {
   const c = current;
-  c?.abort(reason);
-  await killAllTrees();
-  await c?.release();
   current = undefined;
+  if (!c) return;
+  if (await killAllTrees()) {
+    await c.release();
+  } else {
+    c.abandon();
+    process.stdout.write(JSON.stringify({
+      severity: "ERROR", message: "airspace: child processes could not be confirmed dead; claim left to expire with its lease",
+    }) + "\n");
+  }
 }
 
 /** Returns the exit code: 0 ok, 1 failed, 3 held, 4 airspace lost mid-run, 5 airspace refused. */
@@ -80,8 +92,7 @@ export async function main(procEnv: NodeJS.ProcessEnv = process.env, deps: Cloud
   try {
     return await run(env, procEnv, db, storage, deps);
   } catch (e) {
-    await current?.release();
-    current = undefined;
+    await endRun();
     process.stdout.write(JSON.stringify({
       severity: "ERROR", message: "cloud-job fatal", error: String(e), runId: procEnv.RUN_ID,
     }) + "\n");
@@ -164,11 +175,19 @@ async function run(
   let claim: RunClaim | undefined;
   const runController = new AbortController();
   if (!dryRun) {
-    let derived: string[] = [];
-    try {
-      const p = (await projectDoc.get()).data() as { airspace?: unknown } | undefined;
-      if (Array.isArray(p?.airspace)) derived = p!.airspace.filter((k): k is string => typeof k === "string").map(normalizeResource);
-    } catch { /* no record airspace: the plan's own block is the claim */ }
+    // A run the cockpit cancelled before its execution name was stored must not
+    // start: its claim was released on Cancel, so it would run unaccounted for.
+    const prior = (await runDoc.get()).data() as { status?: string; cancelRequestedAt?: unknown } | undefined;
+    if (prior?.status === "cancelled" || prior?.cancelRequestedAt) {
+      log("WARNING", "run was cancelled before it started; nothing launched", { cancelled: true });
+      return 0;
+    }
+    // The record's airspace carries the derived repo: keys sync computed. A failed
+    // read fails the launch (closed), never a launch with a smaller claim.
+    const p = (await projectDoc.get()).data() as { airspace?: unknown } | undefined;
+    const derived = Array.isArray(p?.airspace)
+      ? p!.airspace.filter((k): k is string => typeof k === "string").map(normalizeResource)
+      : [];
     const { leaseMs, heartbeatMs } = leaseSettings(procEnv);
     claim = await claimAirspaceForRun({
       registry: deps.registry ?? openAirspaceRegistry(),
@@ -186,7 +205,7 @@ async function run(
       await projectDoc.update({ state: "drafted", updatedAt: stamp() });
       return 3;
     }
-    current = { release: claim.release, abort: (reason) => runController.abort(reason) };
+    current = { release: claim.release, abandon: claim.abandon, abort: (reason) => runController.abort(reason) };
     log("INFO", `airspace: ${claim.adopted ? "adopted" : "acquired"} ${claim.resources.length} claim(s)`, { resources: claim.resources });
   }
 
@@ -387,10 +406,7 @@ async function run(
   });
 
   const lostReason = claim?.granted ? claim.halt() : undefined;
-  if (current) {
-    await current.release();
-    current = undefined;
-  }
+  await endRun();
 
   // 4) Final lifecycle state — the operator's vocabulary.
   const failed = results.filter((r) => r.status === "failed").length;
@@ -481,5 +497,12 @@ if (isEntry()) {
   process.once("SIGTERM", () => {
     void shutdown("SIGTERM received").finally(() => process.exit(143));
   });
+  // A crash anywhere still stops the children before the claim can be released.
+  const onCrash = (what: string) => (e: unknown) => {
+    process.stdout.write(JSON.stringify({ severity: "ERROR", message: what, error: String((e as Error)?.stack ?? e) }) + "\n");
+    void shutdown(what).finally(() => process.exit(1));
+  };
+  process.once("uncaughtException", onCrash("uncaught exception"));
+  process.once("unhandledRejection", onCrash("unhandled rejection"));
   main().then((code) => process.exit(code));
 }

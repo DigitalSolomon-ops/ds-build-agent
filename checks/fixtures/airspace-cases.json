@@ -16,6 +16,8 @@
     {"in": "ghl_pipeline: OwTVyp / Pipe9 ", "out": "ghl_pipeline:OwTVyp/Pipe9"},
     {"in": "ghl_location:OwTVypw5mcI0oznL5Bgd", "out": "ghl_location:OwTVypw5mcI0oznL5Bgd"},
     {"in": "N8N_Workflow:lead-router", "out": "n8n_workflow:lead-router"},
+    {"in": "plan:Union   Plan", "out": "plan:Union Plan"},
+    {"in": "plan:handoff:2026-10-26-Brief", "out": "plan:handoff:2026-10-26-Brief"},
     {"in": "nocolon", "error": true},
     {"in": "path:C:/x", "error": true},
     {"in": "path:/abs", "error": true},
@@ -40,7 +42,9 @@
     {"a": "ghl_pipeline:L1/P1", "b": "ghl_pipeline:L1/P1", "overlap": true},
     {"a": "ghl_pipeline:L1/P1", "b": "ghl_pipeline:L2/P1", "overlap": false},
     {"a": "repo:x/y", "b": "path:x/y", "overlap": false},
-    {"a": "repo:o/y", "b": "repo:o/y", "overlap": true}
+    {"a": "repo:o/y", "b": "repo:o/y", "overlap": true},
+    {"a": "plan:union plan", "b": "plan:Union Plan", "overlap": true},
+    {"a": "plan:union plan", "b": "plan:union planner", "overlap": false}
   ],
   "path_key": [
     {"abs": "C:\\Users\\marcu\\Projects\\portfolios\\internal-tools\\ds-build-agent", "root": "C:\\Users\\marcu\\Projects", "out": "path:portfolios/internal-tools/ds-build-agent"},

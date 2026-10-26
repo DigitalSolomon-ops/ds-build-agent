@@ -154,7 +154,7 @@ function truncate(s: string, n = 180): string {
 }
 
 /** The running claim, so shutdown() and every exit path can stop the work and free it. */
-let current: { release: () => Promise<void>; abort: (reason: string) => void } | undefined;
+let current: { release: () => Promise<void>; abandon: () => void; abort: (reason: string) => void } | undefined;
 
 /**
  * Stop the run: abort in-flight agents, kill every child process tree the
@@ -163,11 +163,26 @@ let current: { release: () => Promise<void>; abort: (reason: string) => void } |
  * `watch` lists extra pids (e.g. known grandchildren) that must be gone too.
  */
 export async function shutdown(reason: string, opts: { watch?: number[] } = {}): Promise<void> {
+  current?.abort(reason);
+  await endRun(opts.watch);
+}
+
+/**
+ * The one way a run's claim ends: kill every child tree the harness started and
+ * CONFIRM them gone, then release. If they cannot be confirmed dead, the claim is
+ * NOT released — the heartbeat stops and the lease frees it — so nothing is ever
+ * still writing on airspace someone else has been granted.
+ */
+async function endRun(watch?: number[]): Promise<void> {
   const c = current;
-  c?.abort(reason);
-  await killAllTrees({ watch: opts.watch });
-  await c?.release();
   current = undefined;
+  if (!c) return;
+  if (await killAllTrees({ watch })) {
+    await c.release();
+  } else {
+    c.abandon();
+    console.error("✗ airspace: child processes could not be confirmed dead; the claim is left to expire with its lease");
+  }
 }
 
 /** Returns the process exit code: 0 ok, 1 failed, 3 held, 4 airspace lost mid-run, 5 airspace refused. */
@@ -175,8 +190,7 @@ export async function main(argv: string[] = process.argv, deps: CliDeps = {}): P
   try {
     return await run(argv, deps);
   } catch (e) {
-    await current?.release();
-    current = undefined;
+    await endRun();
     if (e instanceof PlanError) console.error(`✗ Invalid plan: ${e.message}`);
     else console.error(`✗ ${(e as Error).message}`);
     return e instanceof AirspaceError ? 5 : 1;
@@ -313,7 +327,7 @@ async function run(argv: string[], deps: CliDeps): Promise<number> {
       console.error("  Launch blocked. It can launch once that run finishes or its lease expires.");
       return 3;
     }
-    current = { release: claim.release, abort: (reason) => runController.abort(reason) };
+    current = { release: claim.release, abandon: claim.abandon, abort: (reason) => runController.abort(reason) };
     console.log(`▸ Claimed:     run ${runId} (${claim.resources.length} resources)\n`);
   }
 
@@ -418,10 +432,7 @@ async function run(argv: string[], deps: CliDeps): Promise<number> {
   });
 
   const lostReason = claim?.granted ? claim.halt() : undefined;
-  if (current) {
-    await current.release();
-    current = undefined;
-  }
+  await endRun();
   stateWriter?.finalize(results);
   report(results, Date.now() - started, cli.dryRun, planWarnings.length, cli.strict);
   if (!cli.dryRun) {
@@ -502,5 +513,12 @@ if (isEntry()) {
   };
   process.once("SIGINT", onSignal(130, "SIGINT"));
   process.once("SIGTERM", onSignal(143, "SIGTERM"));
+  // A crash anywhere still stops the children before the claim can be released.
+  const onCrash = (what: string) => (e: unknown) => {
+    console.error(`✗ ${what}: ${(e as Error)?.stack ?? e}`);
+    void shutdown(what).finally(() => process.exit(1));
+  };
+  process.once("uncaughtException", onCrash("uncaught exception"));
+  process.once("unhandledRejection", onCrash("unhandled rejection"));
   main(process.argv).then((code) => process.exit(code));
 }

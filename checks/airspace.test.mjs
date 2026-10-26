@@ -257,8 +257,8 @@ test("registry: env vars ignored", () => {
   }
   const src = readFileSync(new URL("../src/airspace-launch.ts", import.meta.url), "utf8");
   const envReads = [...src.matchAll(/env\.([A-Z_]+)/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(envReads)].sort(), ["AIRSPACE_HEARTBEAT_MS", "AIRSPACE_LEASE_MS"],
-    "the launcher reads only lease tuning from the environment");
+  assert.deepEqual([...new Set(envReads)].sort(), ["AIRSPACE_HEARTBEAT_MS", "AIRSPACE_LEASE_MS", "FIRESTORE_EMULATOR_HOST"],
+    "the launcher reads only lease tuning from the environment (and the emulator variable, to refuse it)");
 });
 
 test("registry: a test registry must use the airspaceTest_ prefix", () => {
@@ -631,7 +631,7 @@ async function withEnv(vars, fn) {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 }
-const CLI_ENV = { ANTHROPIC_API_KEY: "test-not-a-key", AIRSPACE_LEASE_MS: "60000", AIRSPACE_HEARTBEAT_MS: "1000" };
+const CLI_ENV = { ANTHROPIC_API_KEY: "test-not-a-key", AIRSPACE_LEASE_MS: "60000", AIRSPACE_HEARTBEAT_MS: "5000" };
 const cliArgs = (plan, repo, ...more) => ["node", "ds-build", plan, "--repo", repo, "--api", ...more];
 const okRunner = (fn) => async (task, _plan, repo, _m, _i, signal) => {
   await fn?.(repo, signal);
@@ -755,7 +755,7 @@ test("target: path:abs ok", async () => {
 test("lease: out-of-bounds refused", async () => {
   const t = projectsTree();
   const plan = writePlan(t.proj, ["path:portfolios/internal-tools/demo"]);
-  for (const [lease, beat] of [["1000", "100"], ["3600000", "1000"], ["60000", "30000"]]) {
+  for (const [lease, beat] of [["1000", "100"], ["3600000", "5000"], ["60000", "30000"], ["60000", "1000"]]) {
     const backend = new MemoryAirspaceBackend();
     const code = await withEnv({ ...CLI_ENV, AIRSPACE_LEASE_MS: lease, AIRSPACE_HEARTBEAT_MS: beat }, () =>
       CLI.main(cliArgs(plan, t.proj), { registry: new AirspaceRegistry(backend), taskRunner: okRunner(), projectsRoot: t.root }));
@@ -852,7 +852,7 @@ function fakeCloud(planYaml, { projectAirspace } = {}) {
 const CLOUD_PLAN = "name: cloud-demo\nairspace:\n  - path:portfolios/internal-tools/demo\ntasks:\n  - id: build\n    prompt: build it\n";
 const cloudEnv = (extra = {}) => ({
   PLAN_URI: "gs://b/p.yaml", PROJECT_DOC_ID: "proj-1", RUN_ID: "run-cloud-1", GCP_PROJECT_ID: "test",
-  AIRSPACE_LEASE_MS: "60000", AIRSPACE_HEARTBEAT_MS: "1000", ...extra,
+  AIRSPACE_LEASE_MS: "60000", AIRSPACE_HEARTBEAT_MS: "5000", ...extra,
 });
 
 test("cloud: no GitHub token in agent env", async () => {
@@ -1019,4 +1019,98 @@ test("parity: the-creator's mirrored airspace.ts is byte-identical", (t) => {
   }
   const theirs = readFileSync(theirsPath, "utf8").replace(/\r\n/g, "\n");
   assert.equal(theirs, mine, "copy src/airspace.ts to the-creator/packages/shared/src/airspace.ts");
+});
+
+/* ── Post-build review fixes ───────────────────────────────────────────────── */
+
+test("registry: refuses FIRESTORE_EMULATOR_HOST (an env var must not point it at an empty registry)", async () => {
+  await withEnv({ FIRESTORE_EMULATOR_HOST: "localhost:8080" }, async () => {
+    assert.throws(() => L.openAirspaceRegistry(), (e) => e instanceof AirspaceRefused && /FIRESTORE_EMULATOR_HOST/.test(e.message));
+  });
+});
+
+test("registry: a foreign registry id makes the CLI exit 5 and run nothing", async () => {
+  const t = projectsTree();
+  const plan = writePlan(t.proj, ["path:portfolios/internal-tools/demo"]);
+  const backend = new MemoryAirspaceBackend();
+  backend.head = { registry_id: "someone-else/v9" };
+  let ran = false;
+  const code = await withEnv(CLI_ENV, () =>
+    CLI.main(cliArgs(plan, t.proj), { registry: new AirspaceRegistry(backend), taskRunner: okRunner(() => { ran = true; }), projectsRoot: t.root }));
+  assert.equal(code, 5);
+  assert.equal(ran, false);
+});
+
+test("cloud: a run cancelled before it started does not start", async () => {
+  const f = fakeCloud(CLOUD_PLAN);
+  f.db.store.set("runs/run-cloud-1", { status: "cancelled", cancelRequestedAt: 1 });
+  const backend = new MemoryAirspaceBackend();
+  let ran = false;
+  const code = await withEnv({}, () => CLOUD.main(cloudEnv(), {
+    db: f.db, storage: f.storage, registry: new AirspaceRegistry(backend), secretVal: async () => undefined,
+    taskRunner: async (task) => { ran = true; return { taskId: task.id, status: "success", durationMs: 1 }; },
+  }));
+  assert.equal(code, 0);
+  assert.equal(ran, false);
+  assert.equal(backend.claims.size, 0, "nothing claimed");
+});
+
+test("exit: children not confirmed dead -> the claim is NOT released (left to its lease)", async () => {
+  const t = projectsTree();
+  const plan = writePlan(t.proj, ["path:portfolios/internal-tools/demo"]);
+  const backend = new MemoryAirspaceBackend();
+  const reg = new AirspaceRegistry(backend);
+  // A process the harness did not start and cannot kill by tree: it stays alive.
+  const stubborn = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000)"], { stdio: "ignore", detached: true });
+  let started;
+  const ready = new Promise((r) => { started = r; });
+  const runner = async (task, _p, _r, _m, _i, signal) => {
+    started();
+    await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    return { taskId: task.id, status: "failed", error: "stopped", durationMs: 1 };
+  };
+  const run = withEnv(CLI_ENV, () => CLI.main(cliArgs(plan, t.proj), { registry: reg, taskRunner: runner, projectsRoot: t.root }));
+  await ready;
+  try {
+    await CLI.shutdown("test shutdown", { watch: [stubborn.pid] });
+    const [c] = [...backend.claims.values()];
+    assert.equal(c.status, "active", "an unconfirmed kill never releases the claim");
+  } finally {
+    P.killTree(stubborn.pid);
+  }
+  await run;
+});
+
+test("no unattended SDK: no local runner, no spawn of the harness, the SDK only in agent.ts", (t) => {
+  const here = new URL("..", import.meta.url).pathname.replace(/^\/([a-z]:)/i, "$1");
+  const roots = [[here, ["src"], [".ts"]]];
+  for (const [envName, dirs, exts] of [["CREATOR_REPO", ["services", "packages"], [".ts", ".js", ".mjs"]], ["WATCHER_REPO", ["handoff_watcher"], [".py", ".md"]]]) {
+    const dir = process.env[envName];
+    if (!dir || !existsSync(dir)) {
+      if (CROSS) assert.fail(`${envName} is not set or missing; AIRSPACE_CROSS_REPO=1 requires it`);
+      t.diagnostic(`skipped ${envName}: not set`);
+      continue;
+    }
+    roots.push([dir, dirs, exts]);
+  }
+  // The watcher preamble TELLS claude never to start ds-build: allowed by exact content.
+  const ALLOW = new Set(["- Never start `ds-build`, `node dist/index.js`, `codex` or the Agent SDK. Do the work yourself."]);
+  const hits = [];
+  const walk = (d, exts) => {
+    for (const e of readdirSync(d)) {
+      if (["node_modules", "dist", ".git", ".deps", "__pycache__", "test", "tests"].includes(e)) continue;
+      const p = join(d, e);
+      if (statSync(p).isDirectory()) { walk(p, exts); continue; }
+      if (!exts.some((x) => p.endsWith(x))) continue;
+      readFileSync(p, "utf8").split(/\r?\n/).forEach((l, i) => {
+        if (ALLOW.has(l.trim())) return;
+        const sdkImport = /@anthropic-ai\/claude-agent-sdk/.test(l) && !/[\\/]src[\\/]agent\.ts$/.test(p);
+        const runner = /local-runner|localRunner|local_runner/.test(l);
+        const spawnsHarness = /(spawn|exec|execFile|fork|Popen|subprocess\.\w+)\b.*(dist[\\/]index\.js|ds-build\b)/.test(l);
+        if (sdkImport || runner || spawnsHarness) hits.push(`${p}:${i + 1}: ${l.trim()}`);
+      });
+    }
+  };
+  for (const [root, dirs, exts] of roots) for (const d of dirs) if (existsSync(join(root, d))) walk(join(root, d), exts);
+  assert.deepEqual(hits, []);
 });

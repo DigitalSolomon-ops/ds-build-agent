@@ -11,7 +11,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Firestore, FieldValue } from "@google-cloud/firestore";
@@ -62,8 +62,22 @@ function registryOn(db: FirestoreLike, collectionPrefix?: string): AirspaceRegis
   return new AirspaceRegistry(backend, new AnchoredClock(() => backend.serverTime(), mono));
 }
 
+/**
+ * The Firestore SDK silently redirects every client to an emulator when
+ * FIRESTORE_EMULATOR_HOST is set — an empty registry that grants everything.
+ * That is an env-var bypass, so the production registry refuses to open.
+ */
+function refuseEmulator(): void {
+  if (process.env.FIRESTORE_EMULATOR_HOST) {
+    throw new AirspaceRefused(
+      "airspace: FIRESTORE_EMULATOR_HOST is set, which would point the registry at an emulator; unset it",
+    );
+  }
+}
+
 /** The production registry: REGISTRY's Firestore database (ADC locally / the runtime SA in the cloud). */
 export function openAirspaceRegistry(): AirspaceRegistry {
+  refuseEmulator();
   const { project, database } = registryTarget();
   const db = new Firestore({ projectId: project, databaseId: database, ignoreUndefinedProperties: true });
   return registryOn(db as unknown as FirestoreLike);
@@ -103,12 +117,24 @@ export function folderOf(key: string, root: string | undefined): string | undefi
  * the Projects root, or a declared `path:abs:` outside it. Otherwise exit 5.
  */
 export function checkBuildTarget(target: string, claimed: string[], root: string | undefined): void {
-  const key = root ? pathKeyFor(resolve(target), root) : normalizeResource(`path:abs:${resolve(target)}`);
+  // Real paths on both sides: a junction, symlink or subst drive must not dodge the check.
+  const t = realPath(target);
+  const r = root ? realPath(root) : undefined;
+  const key = r ? pathKeyFor(t, r) : normalizeResource(`path:abs:${t}`);
   const covered = claimed.some((c) => {
     const k = normalizeResource(c);
     return k.startsWith("path:") && resourcesOverlap(k, key) && (k === key || key.startsWith(k + "/"));
   });
-  if (!covered) throw new AirspaceRefused(`airspace: build target ${resolve(target)} not claimed`);
+  if (!covered) throw new AirspaceRefused(`airspace: build target ${t} not claimed`);
+}
+
+/** The canonical path (junctions and symlinks resolved), or the resolved path when it does not exist yet. */
+export function realPath(p: string): string {
+  try {
+    return realpathSync.native(resolve(p));
+  } catch {
+    return resolve(p);
+  }
 }
 
 function git(dir: string, args: string[]): string | undefined {
@@ -210,6 +236,8 @@ export type RunClaim =
       confirm: () => Promise<string | undefined>;
       /** Stop the heartbeat and release the claim. Idempotent; never throws. */
       release: () => Promise<void>;
+      /** Stop the heartbeat WITHOUT releasing: the claim frees itself when its lease ends. */
+      abandon: () => void;
     };
 
 /**
@@ -273,6 +301,10 @@ export async function claimAirspaceForRun(opts: {
       if (lost) return lost;
       const why = await beat.confirm();
       return why ? lost ?? `Airspace lost: ${why}` : undefined;
+    },
+    abandon: () => {
+      released = true;
+      beat.stop();
     },
     release: async () => {
       if (released) return;

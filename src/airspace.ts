@@ -51,6 +51,8 @@ export const DEFAULT_HEARTBEAT_MS = 60_000;
 /** Lease bounds: shorter churns the registry, longer locks a crashed run's project too long. */
 export const MIN_LEASE_MS = 60_000;
 export const MAX_LEASE_MS = 15 * 60_000;
+/** Heartbeat floor: the fence margin (2 x heartbeat) must outlast clock error and a tree kill. */
+export const MIN_HEARTBEAT_MS = 5_000;
 
 /** Clock anchoring: re-measure this often, and discard a measurement slower than this. */
 export const CLOCK_REANCHOR_MS = 10 * 60_000;
@@ -918,13 +920,15 @@ export class AirspaceRegistry {
 
 /* ── Lease settings ────────────────────────────────────────────────────────── */
 
-/** Refuse a lease outside [MIN_LEASE_MS, MAX_LEASE_MS] or a heartbeat slower than lease/3. */
+/** Refuse a lease outside [MIN_LEASE_MS, MAX_LEASE_MS], or a heartbeat under MIN_HEARTBEAT_MS or over lease/3. */
 export function checkLeaseSettings(leaseMs: number, heartbeatMs: number): void {
   if (!(leaseMs >= MIN_LEASE_MS && leaseMs <= MAX_LEASE_MS)) {
     throw new AirspaceRefused(`airspace: lease ${leaseMs} ms is outside ${MIN_LEASE_MS}–${MAX_LEASE_MS} ms`);
   }
-  if (!(heartbeatMs > 0 && heartbeatMs <= leaseMs / 3)) {
-    throw new AirspaceRefused(`airspace: heartbeat ${heartbeatMs} ms must be > 0 and ≤ lease/3 (${Math.floor(leaseMs / 3)} ms)`);
+  if (!(heartbeatMs >= MIN_HEARTBEAT_MS && heartbeatMs <= leaseMs / 3)) {
+    throw new AirspaceRefused(
+      `airspace: heartbeat ${heartbeatMs} ms must be ${MIN_HEARTBEAT_MS}–${Math.floor(leaseMs / 3)} ms (≥ ${MIN_HEARTBEAT_MS}, ≤ lease/3)`,
+    );
   }
 }
 
