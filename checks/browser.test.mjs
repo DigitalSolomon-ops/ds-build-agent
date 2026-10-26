@@ -84,6 +84,7 @@ test("parser: task `browser: true` is parsed; anything else is off", () => {
   const p = validatePlan(
     {
       name: "P",
+      airspace: ["path:builds/test"],
       tasks: [
         { id: "a", prompt: "x", browser: true },
         { id: "b", prompt: "y", browser: false },

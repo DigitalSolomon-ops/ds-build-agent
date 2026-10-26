@@ -75,14 +75,14 @@ test("gateSensitiveResult: an already-failed build is not re-judged", () => {
 });
 
 test("parser: verify_model is read and does not warn", () => {
-  const plan = { project: { name: "x" }, tasks: [{ id: "a", prompt: "do", sensitivity: ["compliance"], verify_model: "opus" }] };
+  const plan = { project: { name: "x" }, airspace: ["path:builds/test"], tasks: [{ id: "a", prompt: "do", sensitivity: ["compliance"], verify_model: "opus" }] };
   assert.deepEqual(collectPlanWarnings(plan), []);
   assert.equal(validatePlan(plan, { quiet: true }).tasks[0].verifyModel, "opus");
 });
 
 test("persistence: a verify record reaches run-state.json and events.ndjson", () => {
   const plan = validatePlan(
-    { project: { name: "x" }, tasks: [{ id: "a", phase: "1-build", prompt: "do", sensitivity: ["compliance"] }] },
+    { project: { name: "x" }, airspace: ["path:builds/test"], tasks: [{ id: "a", phase: "1-build", prompt: "do", sensitivity: ["compliance"] }] },
     { quiet: true },
   );
   const stateDir = mkdtempSync(join(tmpdir(), "p7-state-"));

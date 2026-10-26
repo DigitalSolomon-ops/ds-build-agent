@@ -36,6 +36,14 @@ vibes. Four independent mechanisms:
   the gate passes. `human`/`ghl` tasks are recorded to the handoff doc and
   marked `deferred`.
 
+- **Airspace** ([src/airspace.ts](src/airspace.ts)) — every plan declares a
+  required `airspace` block (repos, folders, GHL locations and pipelines). Before
+  any launch, local or cloud, every resource is claimed in one Firestore
+  transaction; any overlap with a live run is a hard block naming the holder
+  (`held: conflicts with fast-insurance-group on ghl_pipeline:Partner Sales`).
+  No override exists. Claims carry a heartbeat-renewed lease, so a crashed run
+  frees itself. See [docs/AIRSPACE.md](docs/AIRSPACE.md).
+
 Plus a **gate battery** ([src/gate-battery.ts](src/gate-battery.ts)): static
 analysis that tells the operator up front which human gates are front-loadable
 and what fraction of the build then runs unattended.
@@ -149,7 +157,17 @@ API-equivalent cost, so it limits how much of your plan one run can use.
 - `--dry-run` — routing simulation; no agents, no spend.
 - `--subscription` / `--api` — override the auth mode (see above).
 
-Exit code is non-zero if any task failed or was skipped.
+Exit code is non-zero if any task failed or was skipped. A real run exits 3 when
+its airspace is held by another run, and 1 when the registry cannot be reached
+(fail-closed: it never launches unchecked).
+
+```powershell
+ds-build sync fast-insurance-group        # queue a project in Local Builds as a dry run
+ds-build airspace list                    # live claims (both lanes) + held launches
+ds-build airspace check plan.yaml         # would this plan be held right now?
+ds-build airspace draft plan.yaml         # draft an airspace block for review
+ds-build local-runner                     # run plans launched from the Local Builds page
+```
 
 ## Cloud
 

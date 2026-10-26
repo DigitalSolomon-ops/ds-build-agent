@@ -18,6 +18,12 @@ conventions:
 # Default model for all tasks (aliases: opus | sonnet | haiku). Tasks may override.
 model: sonnet
 
+# What this plan writes to. Required: every launch claims these in the shared
+# airspace registry first, and any overlap with a live run blocks the launch.
+airspace:
+  paths:
+    - portfolios/internal-tools/ds-build-agent/builds/lead-capture-microsite
+
 tasks:
   - id: scaffold
     title: Project scaffold

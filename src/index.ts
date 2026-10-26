@@ -12,6 +12,8 @@ import { analyzeGateBattery } from "./gate-battery.js";
 import type { TaskResult } from "./types.js";
 import { isBuildExecutor } from "./types.js";
 import { resolveAuthMode, subscriptionLoginProblem, type AuthMode } from "./auth.js";
+import { claimAirspaceForRun, newRunId, openAirspaceRegistry, type RunClaim } from "./airspace-launch.js";
+import { runSubcommand, SUBCOMMANDS } from "./commands.js";
 
 interface Cli {
   planPath: string;
@@ -49,11 +51,19 @@ interface Cli {
   maxUsd?: string;
   /** How agents authenticate: the Claude subscription (local default) or ANTHROPIC_API_KEY. */
   auth: AuthMode;
+  /**
+   * Run id for the airspace claim. Set by the Local Builds runner when the
+   * cockpit already acquired the claim at Launch, so this process ADOPTS it.
+   * Absent = a fresh id. (This picks WHICH claim, never whether to claim.)
+   */
+  runId?: string;
 }
 
 function parseArgs(argv: string[]): Cli {
   const args = argv.slice(2);
-  const planPath = args.find((a) => !a.startsWith("--"));
+  // Flags that take a value; their values are not the plan path.
+  const VALUED = new Set(["--out", "--repo", "--max-usd", "--concurrency", "--only", "--run-id"]);
+  const planPath = args.find((a, i) => !a.startsWith("--") && !VALUED.has(args[i - 1] ?? ""));
   const has = (flag: string) => args.includes(flag);
   const get = (flag: string) => {
     const i = args.indexOf(flag);
@@ -62,7 +72,10 @@ function parseArgs(argv: string[]): Cli {
   if (!planPath) {
     throw new Error(
       "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run] [--strict] " +
-        "[--state [dir]] [--dashboard [path]] [--status [path]] [--repo <existing-repo>] [--subscription | --api]",
+        "[--state [dir]] [--dashboard [path]] [--status [path]] [--repo <existing-repo>] [--subscription | --api] [--run-id <id>]\n" +
+        "       ds-build sync <project-dir> [--plan <file>] [--dry-run]\n" +
+        "       ds-build airspace <list | draft <plan.yaml> | check <plan.yaml>>\n" +
+        "       ds-build local-runner [--once]",
     );
   }
   const out = get("--out") ?? join(process.cwd(), "builds");
@@ -105,6 +118,7 @@ function parseArgs(argv: string[]): Cli {
     repo,
     maxUsd,
     auth: resolveAuthMode({ subscription: has("--subscription"), api: has("--api") }),
+    runId: get("--run-id"),
   };
 }
 
@@ -113,7 +127,13 @@ function truncate(s: string, n = 180): string {
   return flat.length > n ? flat.slice(0, n) + "…" : flat;
 }
 
+/** Release hook for the run's airspace claim, so every exit path frees it. */
+let releaseAirspace: (() => Promise<void>) | undefined;
+
 async function main() {
+  if (SUBCOMMANDS.has(process.argv[2] ?? "")) {
+    process.exit(await runSubcommand(process.argv.slice(2)));
+  }
   const cli = parseArgs(process.argv);
   // loadPlan prints each warning to stderr as it loads; we also capture the list
   // so the summary can show a count and --strict can turn any warning into a
@@ -218,6 +238,41 @@ async function main() {
       : "ANTHROPIC_API_KEY (billed per token)"}\n`,
   );
 
+  console.log(`▸ Airspace:    ${plan.airspace.join(", ")}`);
+
+  // AIRSPACE (hard block). Claim every declared resource in one transaction
+  // before anything dispatches. Held -> exit 3 naming the holder. Registry
+  // unreachable -> exit 1: fail-closed, never launch unchecked. No override.
+  let claim: RunClaim | undefined;
+  if (!cli.dryRun) {
+    const runId = cli.runId ?? newRunId("local");
+    try {
+      claim = await claimAirspaceForRun({
+        registry: openAirspaceRegistry(),
+        plan,
+        runId,
+        lane: "local",
+        log: (_lvl, msg) => console.warn(`  ⚠ ${msg}`),
+      });
+    } catch (e) {
+      console.error(`✗ Airspace registry unreachable, so nothing was launched: ${(e as Error).message}`);
+      console.error("  Fix Google auth (gcloud auth application-default login) and launch again.");
+      process.exit(1);
+    }
+    if (!claim.granted) {
+      console.error(`✗ ${claim.message}`);
+      console.error("  Launch blocked. It can launch once that run finishes or its lease expires.");
+      process.exit(3);
+    }
+    releaseAirspace = claim.release;
+    const onSignal = (code: number) => () => {
+      void (releaseAirspace?.() ?? Promise.resolve()).finally(() => process.exit(code));
+    };
+    process.once("SIGINT", onSignal(130));
+    process.once("SIGTERM", onSignal(143));
+    console.log(`▸ Claimed:     run ${runId}${claim.adopted ? " (adopted the cockpit's claim)" : ""}\n`);
+  }
+
   // Gate battery (whetstone W1): how much of the build the operator can unlock
   // by clearing gates up front, and which gates legitimately wait for the build.
   printGateBattery(plan);
@@ -268,6 +323,7 @@ async function main() {
     concurrency: cli.concurrency,
     dryRun: cli.dryRun,
     capReached: () => cost.reached(runCapUsd),
+    halt: claim?.granted ? claim.halt : undefined,
     onEvent: (e) => {
       if (e.type === "task-done") cost.add(e.result.usage?.costUsd, e.result.verify?.usage?.costUsd);
       stateWriter?.handleEvent(e);
@@ -295,6 +351,7 @@ async function main() {
     },
   });
 
+  await releaseAirspace?.();
   stateWriter?.finalize(results);
   report(results, Date.now() - started, cli.dryRun, planWarnings.length, cli.strict);
   if (!cli.dryRun) {
@@ -355,7 +412,8 @@ function report(
   }
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
+  await releaseAirspace?.();
   if (e instanceof PlanError) console.error(`✗ Invalid plan: ${e.message}`);
   else console.error(`✗ ${(e as Error).message}`);
   process.exit(1);

@@ -90,6 +90,13 @@ deploy_policy:
       sign-off, then re-runs (e.g. --only write-verification-record,write-guardrails,
       note-tool-permissions) to emit the handoff docs.
 
+# Airspace (required): the build folder and the one GHL sub-account it documents.
+airspace:
+  paths:
+    - portfolios/internal-tools/ds-build-agent/builds/ghl-mcp-connection
+  other:
+    - "ghl_mcp:single-location-connection"
+
 tasks:
 
   # ---------------- PHASE 0 — agent-buildable scaffolding ----------------

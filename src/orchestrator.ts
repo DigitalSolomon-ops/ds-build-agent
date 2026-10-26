@@ -31,6 +31,13 @@ export interface OrchestratorOptions {
    */
   capReached?: () => boolean;
   /**
+   * General dispatch brake with a reason. Same semantics as `capReached` (start
+   * nothing new, skip the rest, let running tasks finish), for stops that are not
+   * about money: the run lost its airspace claim (airspace.ts heartbeat).
+   * Returns the skip reason when tripped, undefined otherwise.
+   */
+  halt?: () => string | undefined;
+  /**
    * Override the adversarial verify runner (defaults to agent.runVerify). A test
    * seam, and the hook a caller uses to supply an escalated verify model.
    */
@@ -150,8 +157,9 @@ export async function orchestrate(
           // Checked first so a capped run halts uniformly rather than partly
           // routing through dep/gate logic. Tasks already running finish; their
           // pump() re-entry sees the cap still tripped and starts nothing.
-          if (opts.capReached?.()) {
-            const reason = "Run cost cap reached — dispatch halted.";
+          const haltReason = opts.capReached?.() ? "Run cost cap reached — dispatch halted." : opts.halt?.();
+          if (haltReason) {
+            const reason = haltReason;
             finish(id, { taskId: id, status: "skipped", error: reason, durationMs: 0 });
             opts.onEvent?.({ type: "task-skipped", task, reason });
             progressed = true;

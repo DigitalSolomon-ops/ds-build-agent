@@ -22,6 +22,7 @@ const validTask = (over = {}) => ({ id: "t1", prompt: "do the thing", ...over })
 test("clean plan produces zero warnings and validates", () => {
   const plan = {
     project: { name: "clean-app", description: "a clean plan" },
+    airspace: { paths: ["builds/clean-app"] },
     model: "sonnet",
     deploy_policy: {
       launch_gate: true,
@@ -118,8 +119,8 @@ test("TRAP 3: top-level `deploy_policy.commit_after_each_task` warns", () => {
 });
 
 test("sensitivity: scalar and list both normalize to a lowercased string[], zero warnings", () => {
-  const scalar = { project: { name: "x" }, tasks: [{ id: "a", prompt: "do", sensitivity: "Compliance" }] };
-  const list = { project: { name: "x" }, tasks: [{ id: "a", prompt: "do", sensitivity: ["compliance"] }] };
+  const scalar = { project: { name: "x" }, airspace: ["path:builds/test"], tasks: [{ id: "a", prompt: "do", sensitivity: "Compliance" }] };
+  const list = { project: { name: "x" }, airspace: ["path:builds/test"], tasks: [{ id: "a", prompt: "do", sensitivity: ["compliance"] }] };
   assert.deepEqual(collectPlanWarnings(scalar), []);
   assert.deepEqual(collectPlanWarnings(list), []);
   assert.deepEqual(validatePlan(scalar, { quiet: true }).tasks[0].sensitivity, ["compliance"]);
@@ -127,7 +128,7 @@ test("sensitivity: scalar and list both normalize to a lowercased string[], zero
 });
 
 test("sensitivity: an unrecognized tag value warns once (and still loads)", () => {
-  const plan = { project: { name: "x" }, tasks: [{ id: "a", prompt: "do", sensitivity: "complaince" }] };
+  const plan = { project: { name: "x" }, airspace: ["path:builds/test"], tasks: [{ id: "a", prompt: "do", sensitivity: "complaince" }] };
   const w = collectPlanWarnings(plan);
   assert.equal(w.length, 1, `expected one warning, got: ${JSON.stringify(w)}`);
   assert.match(w[0], /complaince/); // names the bad value

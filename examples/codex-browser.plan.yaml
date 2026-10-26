@@ -7,6 +7,11 @@ stack:
   - TypeScript
   - Node
 
+# What this plan writes to. Required: claimed before launch, conflicts are held.
+airspace:
+  paths:
+    - portfolios/internal-tools/ds-build-agent/builds/Codex-Browser-demo
+
 tasks:
   - id: scaffold
     title: Scaffold the project (Claude)

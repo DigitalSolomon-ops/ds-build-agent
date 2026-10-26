@@ -97,7 +97,7 @@ test("parseCodexResult: empty stream ⇒ no summary, no usage", () => {
 
 test("parser: executor 'codex' is a valid BUILD task (auto true by default)", () => {
   const p = validatePlan(
-    { name: "P", tasks: [{ id: "a", prompt: "x", executor: "codex" }] },
+    { name: "P", airspace: ["path:builds/test"], tasks: [{ id: "a", prompt: "x", executor: "codex" }] },
     { quiet: true },
   );
   assert.equal(p.tasks[0].executor, "codex");

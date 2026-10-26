@@ -131,6 +131,13 @@ export interface BuildPlan {
   /** The tasks that make up the build. */
   tasks: Task[];
   /**
+   * What this plan writes to, as normalized typed keys (`repo:owner/name`,
+   * `path:portfolios/...`, `ghl_location:<id>`, `ghl_pipeline:<name>`, ...). From
+   * the REQUIRED top-level `airspace` block. Claimed in the shared registry before
+   * every launch, local or cloud; any overlap with a live claim blocks the launch.
+   */
+  airspace: string[];
+  /**
    * Operator write-back, threaded into every agent's shared context: answers
    * the operator gave to prior blockers, plus the names of documents they
    * attached. Populated by the cloud runner (cloud-job.ts) from Firestore +

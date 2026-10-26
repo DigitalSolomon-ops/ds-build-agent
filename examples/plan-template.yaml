@@ -52,6 +52,24 @@ deploy_policy:
     # task. Read ONLY here — putting it at the top of deploy_policy is a no-op.
     commit_after_each_task: true
 
+# --- airspace: REQUIRED. Everything this plan writes to, so no two runs (local or
+#     cloud) ever work the same resources at once. Before every launch the
+#     launcher claims all of these in one transaction; any overlap with a live
+#     run is a hard block that names the holder. No override exists.
+#     Keys: repos (owner/name or bare name), paths (folders, relative to the
+#     Projects root; a folder claims everything under it), ghl_locations,
+#     ghl_pipelines, other (typed keys like "n8n_workflow:lead-router").
+#     Draft one with: ds-build airspace draft <plan>.yaml
+airspace:
+  repos:
+    - DigitalSolomon-ops/my-new-build
+  paths:
+    - portfolios/own-products/my-new-build
+  ghl_locations:
+    - LOCATION_ID_HERE
+  ghl_pipelines:
+    - "Partner Sales"
+
 tasks:
 
   # ---- Phase 0 — discovery ---------------------------------------------------

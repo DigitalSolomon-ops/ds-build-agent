@@ -3,6 +3,7 @@ import { parse as parseYaml } from "yaml";
 import type { BuildPlan, DeployPolicy, Executor, Task } from "./types.js";
 import { isBuildExecutor } from "./types.js";
 import { RECOGNIZED_SENSITIVITIES } from "./model.js";
+import { AirspaceError, draftAirspaceYaml, parseAirspaceBlock } from "./airspace.js";
 
 /** Thrown when a plan file is structurally invalid. */
 export class PlanError extends Error {}
@@ -81,6 +82,22 @@ export function validatePlan(raw: unknown, opts: ValidateOptions = {}): BuildPla
   }
   detectCycles(tasks);
 
+  // Airspace is REQUIRED: a plan that has not declared what it writes to cannot
+  // be checked for conflicts, so it cannot launch. No opt-out (see airspace.ts).
+  let airspace: string[];
+  try {
+    if (p.airspace === undefined && project !== p && project.airspace !== undefined) {
+      throw new AirspaceError("`airspace` sits inside the `project:` block; move it to the top level of the plan.");
+    }
+    airspace = parseAirspaceBlock(p.airspace);
+  } catch (e) {
+    if (!(e instanceof AirspaceError)) throw e;
+    const hint = p.airspace === undefined
+      ? `\nAdd a block like this and review it (or run \`ds-build airspace draft <plan>\`):\n${draftAirspaceYaml({})}`
+      : "";
+    throw new PlanError(`${e.message}${hint}`);
+  }
+
   // Plan-level shared_files apply to every scoped task, alongside its own.
   const planShared = strArray(p.shared_files, "`shared_files`") ?? [];
   for (const task of tasks) {
@@ -96,13 +113,14 @@ export function validatePlan(raw: unknown, opts: ValidateOptions = {}): BuildPla
     model: str(project.model_id) ?? str(p.model),
     policy: parsePolicy(p.deploy_policy),
     tasks,
+    airspace,
   };
 }
 
 // Every key the parser actually reads, per level. Anything a plan carries that
 // is NOT on the matching list is dropped silently by the YAML load — so we name
 // it. Keep these in lockstep with what validatePlan/parseTask/parsePolicy read.
-const TOP_LEVEL_KEYS = new Set(["project", "name", "tasks", "model", "deploy_policy", "shared_files"]);
+const TOP_LEVEL_KEYS = new Set(["project", "name", "tasks", "model", "deploy_policy", "shared_files", "airspace"]);
 // When there is no `project:` block, project metadata lives at the top level
 // (the `project = p` fallback), so these are legitimate top-level keys too.
 const TOP_LEVEL_FALLBACK_KEYS = new Set([

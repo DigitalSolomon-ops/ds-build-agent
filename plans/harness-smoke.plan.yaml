@@ -4,6 +4,10 @@ description: First cloud run against the post-Phase-B harness. Proves cost captu
 deploy_policy:
   max_run_usd: 5.00
 
+airspace:
+  paths:
+    - portfolios/internal-tools/ds-build-agent/builds/harness-smoke
+
 tasks:
   - id: smoke-write-file
     phase: "1"

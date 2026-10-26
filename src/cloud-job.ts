@@ -9,6 +9,12 @@
  *   DRY_RUN         "true" to route without building
  *   GCP_PROJECT_ID  Firestore/Storage project
  *   ANTHROPIC_API_KEY  injected from Secret Manager by the job definition
+ *   AIRSPACE_LEASE_MS / AIRSPACE_HEARTBEAT_MS  optional lease tuning (airspace.ts defaults)
+ *
+ * AIRSPACE: before anything dispatches, the runner adopts the claim creator-solomon
+ * acquired at Launch (same RUN_ID) or acquires it fresh. Held -> runs/{id}.status
+ * "held" with the conflict named, project back to "drafted", exit 3, nothing built.
+ * The claim is heartbeated while the run works and released when it ends.
  *
  * Status lifecycle written to projects/{PROJECT_DOC_ID}.state:
  *   running -> waiting (human tasks / launch gate) | stuck (task failed)
@@ -24,6 +30,7 @@ import { orchestrate } from "./orchestrator.js";
 import { writeOperatorAnswers, buildOperatorContext, type OperatorAnswer } from "./operator-writeback.js";
 import type { TaskResult } from "./types.js";
 import { isBuildExecutor } from "./types.js";
+import { claimAirspaceForRun, openAirspaceRegistry, type RunClaim } from "./airspace-launch.js";
 
 const env = (k: string, fallback?: string): string => {
   const v = process.env[k] ?? fallback;
@@ -32,6 +39,8 @@ const env = (k: string, fallback?: string): string => {
 };
 
 const db = new Firestore({ projectId: env("GCP_PROJECT_ID"), ignoreUndefinedProperties: true });
+/** Release hook for this run's airspace claim, so the fatal path frees it too. */
+let releaseAirspace: (() => Promise<void>) | undefined;
 const storage = new Storage({ projectId: env("GCP_PROJECT_ID") });
 
 async function main() {
@@ -90,6 +99,30 @@ async function main() {
   const runDoc = db.collection("runs").doc(runId);
   const projectDoc = db.collection("projects").doc(projectDocId);
   const stamp = () => Date.now();
+
+  // 2a) AIRSPACE (hard block, no override). A dry run claims nothing.
+  let claim: RunClaim | undefined;
+  if (!dryRun) {
+    claim = await claimAirspaceForRun({
+      registry: openAirspaceRegistry(),
+      plan,
+      runId,
+      lane: "cloud",
+      log: (lvl, msg) => log(lvl === "warn" ? "WARNING" : "INFO", msg),
+    });
+    if (!claim.granted) {
+      log("WARNING", claim.message, { held: true });
+      await runDoc.set({ status: "held", heldReason: claim.message, finishedAt: stamp() }, { merge: true });
+      await projectDoc.update({ state: "drafted", updatedAt: stamp() });
+      process.exit(3);
+    }
+    releaseAirspace = claim.release;
+    // The cockpit's kill switch cancels the execution with SIGTERM: free the airspace on the way out.
+    process.once("SIGTERM", () => {
+      void (releaseAirspace?.() ?? Promise.resolve()).finally(() => process.exit(143));
+    });
+    log("INFO", `airspace: ${claim.adopted ? "adopted" : "acquired"} ${claim.resources.length} claim(s)`, { resources: claim.resources });
+  }
 
   // merge: keep estCostUsd + executionName the launcher (creator-solomon)
   // already stamped for guardrails accounting + the kill switch.
@@ -212,6 +245,7 @@ async function main() {
     concurrency: Number(process.env.CONCURRENCY ?? 2),
     dryRun,
     integrations,
+    halt: claim?.granted ? claim.halt : undefined,
     // B2: stop dispatching once accumulated reported cost reaches the cap.
     capReached: () => {
       const over = spentUsd >= runCapUsd;
@@ -278,6 +312,8 @@ async function main() {
       }
     },
   });
+
+  await releaseAirspace?.();
 
   // 4) Final lifecycle state — the operator's vocabulary.
   const failed = results.filter((r) => r.status === "failed").length;
@@ -350,6 +386,7 @@ async function main() {
 }
 
 main().catch(async (e) => {
+  await releaseAirspace?.();
   process.stdout.write(JSON.stringify({
     severity: "ERROR", message: "cloud-job fatal", error: String(e), runId: process.env.RUN_ID,
   }) + "\n");

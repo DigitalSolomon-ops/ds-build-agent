@@ -115,6 +115,7 @@ test("a plan with no launch gate omits the gate marker", () => {
   const plan = validatePlan(
     {
       project: { name: "no-gate-app" },
+      airspace: ["path:builds/test"],
       tasks: [
         { id: "a", executor: "agent", title: "A", prompt: "build A" },
         { id: "b", executor: "agent", title: "B", prompt: "build B", deps: ["a"] },

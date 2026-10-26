@@ -149,6 +149,7 @@ test("concurrent codex task (writes unobservable) is not committed over its sibl
 test("shared_files: plan- and task-level globs widen a scoped task's boundary", () => {
   const p = validatePlan({
     name: "s",
+    airspace: ["path:builds/test"],
     shared_files: ["tsconfig.json"],
     tasks: [
       { id: "a", brief: "x", scope: ["src/a/**"], shared_files: ["src/index.ts"] },
@@ -168,7 +169,7 @@ test("shared_files: plan- and task-level globs widen a scoped task's boundary", 
 
 test("shared_files is a known key (no ignored-key warning)", () => {
   let warnings = [];
-  validatePlan({ name: "s", shared_files: ["x"], tasks: [{ id: "a", brief: "x", shared_files: ["y"] }] },
+  validatePlan({ name: "s", airspace: ["path:builds/test"], shared_files: ["x"], tasks: [{ id: "a", brief: "x", shared_files: ["y"] }] },
     { quiet: true, onWarnings: (w) => { warnings = w; } });
   assert.deepEqual(warnings.filter((w) => w.includes("shared_files")), []);
 });
