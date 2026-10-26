@@ -1,0 +1,6 @@
+live-probe exit=0
+live-race exit=0
+live-disjoint exit=0
+live-crash exit=0
+live-partition exit=0
+live-watcher exit=0

@@ -1,0 +1,11 @@
+{"check":"disjoint round 1: all granted","ok":true,"results":[{"runId":"dis-1-0-43ea50","granted":true,"ms":1117.5500000000002},{"runId":"dis-1-1-c46474","granted":true,"ms":2448.178100000001},{"runId":"dis-1-2-8520ed","granted":true,"ms":391.4822000000004},{"runId":"dis-1-3-cd0116","granted":true,"ms":1775.6948999999995},{"runId":"dis-1-4-f2d578","granted":true,"ms":2800.8157999999994}]}
+{"check":"disjoint round 1: no held record written","ok":true,"held":0}
+{"check":"disjoint round 2: all granted","ok":true,"results":[{"runId":"dis-2-0-db7c83","granted":true,"ms":1340.8834000000006},{"runId":"dis-2-1-859253","granted":true,"ms":857.0981000000002},{"runId":"dis-2-2-fd6be9","granted":true,"ms":2166.6799999999994},{"runId":"dis-2-3-953e77","granted":true,"ms":410.20859999999993},{"runId":"dis-2-4-1aeb0c","granted":true,"ms":1793.7163999999993}]}
+{"check":"disjoint round 2: no held record written","ok":true,"held":0}
+{"check":"disjoint round 3: all granted","ok":true,"results":[{"runId":"dis-3-0-03a9af","granted":true,"ms":1776.5710000000008},{"runId":"dis-3-1-c81ba8","granted":true,"ms":1332.9532999999992},{"runId":"dis-3-2-c9e2a7","granted":true,"ms":889.0119999999997},{"runId":"dis-3-3-3abf0a","granted":true,"ms":2135.1562000000004},{"runId":"dis-3-4-363ede","granted":true,"ms":411.0469000000003}]}
+{"check":"disjoint round 3: no held record written","ok":true,"held":0}
+{"check":"disjoint round 4: all granted","ok":true,"results":[{"runId":"dis-4-0-7b1df3","granted":true,"ms":862.0293999999994},{"runId":"dis-4-1-af3ffc","granted":true,"ms":411.4802000000009},{"runId":"dis-4-2-441fea","granted":true,"ms":1797.4220999999998},{"runId":"dis-4-3-a2a340","granted":true,"ms":1306.8743999999997},{"runId":"dis-4-4-229d00","granted":true,"ms":2201.3549000000003}]}
+{"check":"disjoint round 4: no held record written","ok":true,"held":0}
+{"samples_ms":[1118,2448,391,1776,2801,1341,857,2167,410,1794,1777,1333,889,2135,411,862,411,1797,1307,2201]}
+{"check":"disjoint: acquire p95 <= 3000 ms over 20 samples (5 simultaneous)","ok":true,"p95":2448}
+{"mode":"disjoint","violations":[]}

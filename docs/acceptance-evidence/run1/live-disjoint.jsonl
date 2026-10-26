@@ -1,0 +1,11 @@
+{"check":"disjoint round 1: all granted","ok":true,"results":[{"runId":"dis-1-0-ae9ce1","granted":true,"ms":1842.6732999999995},{"runId":"dis-1-1-937eca","granted":true,"ms":883.4133000000002},{"runId":"dis-1-2-1b4138","granted":true,"ms":1366.8617999999997},{"runId":"dis-1-3-cbb7c6","granted":true,"ms":410.83460000000105},{"runId":"dis-1-4-f38b4a","granted":true,"ms":2219.5825000000004}]}
+{"check":"disjoint round 1: no held record written","ok":true,"held":0}
+{"check":"disjoint round 2: all granted","ok":true,"results":[{"runId":"dis-2-0-655e6c","granted":true,"ms":2361.7285999999995},{"runId":"dis-2-1-29c6b0","granted":true,"ms":472.21210000000065},{"runId":"dis-2-2-ea5732","granted":true,"ms":1420.6156},{"runId":"dis-2-3-e58ee3","granted":true,"ms":1932.424000000001},{"runId":"dis-2-4-016def","granted":true,"ms":940.9178000000002}]}
+{"check":"disjoint round 2: no held record written","ok":true,"held":0}
+{"check":"disjoint round 3: all granted","ok":true,"results":[{"runId":"dis-3-0-f43ab2","granted":true,"ms":410.64679999999953},{"runId":"dis-3-1-8ab28c","granted":true,"ms":1336.7942000000012},{"runId":"dis-3-2-7b43be","granted":true,"ms":2213.764399999999},{"runId":"dis-3-3-a0a792","granted":true,"ms":902.8609000000006},{"runId":"dis-3-4-a134ea","granted":true,"ms":1796.2329999999993}]}
+{"check":"disjoint round 3: no held record written","ok":true,"held":0}
+{"check":"disjoint round 4: all granted","ok":true,"results":[{"runId":"dis-4-0-0b0fc3","granted":true,"ms":2237.3422},{"runId":"dis-4-1-946c7f","granted":true,"ms":896.6822999999995},{"runId":"dis-4-2-e58172","granted":true,"ms":435.2618999999995},{"runId":"dis-4-3-7ad21d","granted":true,"ms":1816.7437},{"runId":"dis-4-4-d45cd0","granted":true,"ms":1348.2797999999993}]}
+{"check":"disjoint round 4: no held record written","ok":true,"held":0}
+{"samples_ms":[1843,883,1367,411,2220,2362,472,1421,1932,941,411,1337,2214,903,1796,2237,897,435,1817,1348]}
+{"check":"disjoint: acquire p95 <= 3000 ms over 20 samples (5 simultaneous)","ok":true,"p95":2237}
+{"mode":"disjoint","violations":[]}

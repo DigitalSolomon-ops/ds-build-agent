@@ -1,0 +1,3 @@
+{"check":"partition: child acquired","ok":true}
+{"check":"partition: the child fenced itself (anchored now) before lease_expires_at - margin","ok":true,"fenced_at":1793032645024.11,"lease_expires_at":1793032675436,"reason":"Airspace lost — work stopped: lease unconfirmed: no successful renewal before the fence deadline"}
+{"mode":"partition","violations":[]}

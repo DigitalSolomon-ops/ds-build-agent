@@ -1,0 +1,4 @@
+{"check":"crash: child acquired","ok":true}
+{"check":"crash: an acquire at lease - 30 s is held, naming the dead child","ok":true,"message":"held: conflicts with live-crash-8d564c on path:airspace-test/crash-41c77874 [run crash-8d564c, local lane]"}
+{"check":"crash: a new acquire is granted within lease + one heartbeat + one round-trip","ok":true,"leaseEnd":1793032612526,"grantedAt":1793032612923.5945,"slackMs":398}
+{"mode":"crash","violations":[]}

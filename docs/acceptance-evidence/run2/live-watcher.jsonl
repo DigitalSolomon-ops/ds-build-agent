@@ -1,0 +1,4 @@
+{"check":"watcher: the ds-build-style local claim is held","ok":true}
+{"check":"watcher: the watcher job is held, naming the plan run","ok":true,"message":"held: conflicts with live-plan-681346 on path:portfolios/internal-tools/live-2b1e1263 [run plan-681346, local lane]"}
+{"check":"watcher: the job starts on the first poll after release (<= POLL_SECONDS + 1 transaction)","ok":true,"released_at":1793032652804.3118,"started_at":1793032658044.0967,"waitedMs":5240}
+{"mode":"watcher","violations":[]}
