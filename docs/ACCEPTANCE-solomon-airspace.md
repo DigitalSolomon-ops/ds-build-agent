@@ -120,3 +120,18 @@ Independent verification came from the post-build Goldfish pass and the live run
 Row 19 is NOT RUN, and the brief counts that as FAIL. Every other row is PASS, apart from rows 6, 15 and 16, which have MANUAL parts.
 
 HANDOFF-STOP: acceptance failed: 19 (Goldfish-ID parent-commit proofs not produced; everything else PASS, MANUAL: 6-live-sync, 15-page-cancel, 16-page-rendering)
+
+## Post-deploy manual checks (2026-10-26)
+
+These ran after the merge and deploy. Marcus ran the commands for the IAM grant and the ADC login; the page actions ran in his Chrome as marcus.barber.
+
+| Row | Check | Result |
+|---|---|---|
+| 6 (live part) | `ds-build sync ds-build-agent --plan plans/harness-smoke.plan.yaml` | PASS. Record `sync--internal-tools-ds-build-agent--harness-smoke` is `drafted` / `dry-run`, and its `planSha256` equals the file's hash. |
+| 15 (page part) | Page Cancel on a running watcher job (a 240 s sleep brief in scratch-project) | PASS. Cancel requested at 17:39:05; the Job Object was terminated at 17:39:06.9; the claim was `released` at 17:39:07.1. The lease would otherwise have held until 17:44. |
+| 16 (page part) | The Airspace panel on Local Builds and 007 Agent | PASS. Both list live claims with run, lane, resources and lease. |
+| — | Send to Local Builds, then Launch, then the watcher | PASS. The plan brief landed as Awaiting launch, and Send was disabled for the duplicate. Launch recorded marcus.barber. The watcher claimed path + plan + derived `repo:digitalsolomon-ops/ds-build-agent` before starting, ran 5/5 tasks in 71 s, wrote only inside `builds/harness-smoke/`, and released the claim. |
+| — | Cloud Cancel | PASS. The cancel landed before any task ran, so the cost was $0. The claim was left to the lease and expired on its own. |
+| — | `local-runner-sa` grant | PASS. `ds-build airspace list` as local-runner-sa reads the registry. |
+
+**The conflict check was mistimed.** The cloud Launch came after the local run had already finished and released its claim, so it was correctly granted. The registry pre-check had reported the held conflict while the local claim was live, and rows 9 and 11 cover the block.
