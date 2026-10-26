@@ -950,6 +950,10 @@ const OVERRIDE_ALLOW = new Map([
   ['const skipped = results.filter((r) => r.status === "skipped").length;', "cloud-job: end-of-run counter"],
   ['status: "finished", finishedAt: stamp(), failed, deferred, skipped, ...usageRollup, ...capFields,', "cloud-job: end-of-run counters"],
   ["dryRun?: { wouldBuild: number; deferred: number; skipped: number; tasks: number };", "sync: the dry-run preview's counters"],
+  // the-creator: the SPEND-cap override (server.ts: "`override` lifts the SPEND cap only. Nothing lifts
+  // an airspace hold."); the airspace acquire runs after it unconditionally.
+  ["if (resp.capBlocked && confirm(`${resp.error}\\n\\nLaunch anyway (override the cap for this run)?`)) return launch(true);", "007 page: the spend-cap confirm, not airspace"],
+  ['const dr = p.dryRun ? `${p.dryRun.wouldBuild} build · ${p.dryRun.deferred} human · ${p.dryRun.skipped} skipped` : "";', "Local Builds page: dry-run preview counters"],
 ]);
 function overrideHits(rootDir, subdirs, exts) {
   const hits = [];
@@ -992,7 +996,7 @@ function overrideHits(rootDir, subdirs, exts) {
 
 test("no override: identifiers outside comments", (t) => {
   const hits = overrideHits(new URL("..", import.meta.url).pathname.replace(/^\/([a-z]:)/i, "$1"), ["src"], [".ts"]);
-  const repos = { CREATOR_REPO: [["services", "packages"], [".ts", ".js", ".mjs"]], WATCHER_REPO: [["handoff_watcher"], [".py"]] };
+  const repos = { CREATOR_REPO: [["services", "packages"], [".ts", ".js", ".mjs", ".html"]], WATCHER_REPO: [["handoff_watcher"], [".py"]] };
   for (const [envName, [dirs, exts]] of Object.entries(repos)) {
     const dir = process.env[envName];
     if (!dir || !existsSync(dir)) {
