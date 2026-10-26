@@ -520,7 +520,16 @@ interface FsTransaction {
 }
 export interface FirestoreLike {
   collection(name: string): FsCollection;
-  runTransaction<T>(fn: (t: FsTransaction) => Promise<T>): Promise<T>;
+  runTransaction<T>(fn: (t: FsTransaction) => Promise<T>, opts?: { maxAttempts?: number }): Promise<T>;
+}
+
+/** Contended registry transactions are retried here, quickly, instead of by the SDK's ~1 s backoff. */
+export const CONTENTION_MAX_ATTEMPTS = 25;
+
+/** Firestore ABORTED (gRPC 10): another transaction won the head doc. Safe to re-run from scratch. */
+function isContention(e: unknown): boolean {
+  const err = e as { code?: unknown; message?: unknown };
+  return err?.code === 10 || err?.code === "ABORTED" || /ABORTED|contention/i.test(String(err?.message ?? ""));
 }
 
 export interface FirestoreBackendOptions {
@@ -559,14 +568,35 @@ export class FirestoreAirspaceBackend implements AirspaceBackend {
     return ms;
   }
 
-  transact<T>(fn: (tx: RegistryTx) => Promise<T>): Promise<T> {
+  /**
+   * One registry transaction. The SDK is told to make ONE attempt; a contended
+   * (ABORTED) attempt is re-run here after a short jittered pause (20–400 ms),
+   * not the SDK's second-scale backoff, so simultaneous non-overlapping launches
+   * serialize in milliseconds. Every attempt re-reads everything: correctness is
+   * Firestore's, only the waiting is ours. Any other error is thrown at once.
+   */
+  async transact<T>(fn: (tx: RegistryTx) => Promise<T>): Promise<T> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.attempt(fn);
+      } catch (e) {
+        if (!isContention(e) || attempt >= CONTENTION_MAX_ATTEMPTS) throw e;
+        const pause = Math.min(400, 20 + Math.random() * 40 * attempt);
+        await new Promise((r) => setTimeout(r, pause));
+      }
+    }
+  }
+
+  private attempt<T>(fn: (tx: RegistryTx) => Promise<T>): Promise<T> {
     const db = this.db;
     return db.runTransaction(async (t) => {
       const headRef = db.collection(this.registry).doc("head");
-      const head = await t.get(headRef);
+      // Started now, awaited where needed: the head read runs alongside the others.
+      const headRead = t.get(headRef);
       const writes: ((t: FsTransaction) => void)[] = [];
       const tx: RegistryTx = {
         readHead: async () => {
+          const head = await headRead;
           const d = head.exists ? head.data() ?? {} : {};
           return {
             registry_id: typeof d.registry_id === "string" ? d.registry_id : undefined,
@@ -589,12 +619,13 @@ export class FirestoreAirspaceBackend implements AirspaceBackend {
         writeHeld: (h) => writes.push((tt) => tt.set(db.collection(this.held).doc(h.run_id), toStored(h))),
       };
       const out = await fn(tx);
+      const head = await headRead;
       for (const w of writes) w(t);
       const version = Number(head.exists ? head.data()?.version ?? 0 : 0) + 1;
       // updated_at is the server's commit time: audit only, it never feeds "now".
       t.set(headRef, { version, registry_id: REGISTRY.id, updated_at: this.opts.serverTimestamp() });
       return out;
-    });
+    }, { maxAttempts: 1 });
   }
 
   async listClaims(status?: ClaimStatus): Promise<ClaimRecord[]> {
@@ -750,10 +781,14 @@ export class AirspaceRegistry {
     await this.clock.refresh?.();
     return this.backend.transact(async (tx) => {
       const now = this.clock.now();
-      await this.checkHead(tx, now);
-      const active = await tx.readActive();
-      const mine = await tx.readClaim(req.runId);
-      const priorHeld = await tx.readHeldForPlan(req.planName);
+      // Reads run in parallel (one round-trip, not four): a transaction's latency is
+      // what serializes simultaneous launches on the head doc.
+      const [, active, mine, priorHeld] = await Promise.all([
+        this.checkHead(tx, now),
+        tx.readActive(),
+        tx.readClaim(req.runId),
+        tx.readHeldForPlan(req.planName),
+      ]);
 
       for (const c of active) {
         if (c.lease_expires_at <= now && c.run_id !== req.runId) {
@@ -820,8 +855,7 @@ export class AirspaceRegistry {
     await this.clock.refresh?.();
     return this.backend.transact(async (tx) => {
       const now = this.clock.now();
-      await this.checkHead(tx, now);
-      const mine = await tx.readClaim(runId);
+      const [, mine] = await Promise.all([this.checkHead(tx, now), tx.readClaim(runId)]);
       if (!mine) return { ok: false, reason: `no claim for run ${runId}` };
       if (mine.status === "released") return { ok: false, reason: "claim was released" };
       if (mine.status === "expired") return { ok: false, reason: "claim expired" };
