@@ -12,7 +12,21 @@ import { analyzeGateBattery } from "./gate-battery.js";
 import type { TaskResult } from "./types.js";
 import { isBuildExecutor } from "./types.js";
 import { resolveAuthMode, subscriptionLoginProblem, type AuthMode } from "./auth.js";
-import { claimAirspaceForRun, newRunId, openAirspaceRegistry, type RunClaim } from "./airspace-launch.js";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { AirspaceError, type AirspaceRegistry } from "./airspace.js";
+import {
+  checkBuildTarget,
+  claimAirspaceForRun,
+  deriveRepoKeys,
+  leaseSettings,
+  newRunId,
+  openAirspaceRegistry,
+  type RunClaim,
+} from "./airspace-launch.js";
+import { killAllTrees } from "./proc-tree.js";
+import { findProjectsRoot } from "./sync.js";
+import type { OrchestratorOptions } from "./orchestrator.js";
 import { runSubcommand, SUBCOMMANDS } from "./commands.js";
 
 interface Cli {
@@ -51,18 +65,32 @@ interface Cli {
   maxUsd?: string;
   /** How agents authenticate: the Claude subscription (local default) or ANTHROPIC_API_KEY. */
   auth: AuthMode;
-  /**
-   * Run id for the airspace claim. Set by the Local Builds runner when the
-   * cockpit already acquired the claim at Launch, so this process ADOPTS it.
-   * Absent = a fresh id. (This picks WHICH claim, never whether to claim.)
-   */
-  runId?: string;
 }
+
+/**
+ * What main() runs with. Production passes nothing; the checks inject a memory
+ * registry and a fake task runner so the real entry point runs in-process with no
+ * agent. There is deliberately no env var or flag that selects a backend.
+ */
+export interface CliDeps {
+  registry?: AirspaceRegistry;
+  taskRunner?: OrchestratorOptions["taskRunner"];
+  /** The Projects root (the folder holding studio.yaml); found by walking up when absent. */
+  projectsRoot?: string;
+}
+
+/** Every flag the CLI knows. Anything else is refused (a typo must not silently change a run). */
+const KNOWN_FLAGS = new Set([
+  "--out", "--repo", "--max-usd", "--concurrency", "--only", "--dry-run", "--strict",
+  "--state", "--dashboard", "--status", "--subscription", "--api",
+]);
 
 function parseArgs(argv: string[]): Cli {
   const args = argv.slice(2);
   // Flags that take a value; their values are not the plan path.
-  const VALUED = new Set(["--out", "--repo", "--max-usd", "--concurrency", "--only", "--run-id"]);
+  const VALUED = new Set(["--out", "--repo", "--max-usd", "--concurrency", "--only"]);
+  const unknown = args.filter((a) => a.startsWith("--") && !KNOWN_FLAGS.has(a));
+  if (unknown.length) throw new Error(`Unknown flag(s): ${unknown.join(", ")}`);
   const planPath = args.find((a, i) => !a.startsWith("--") && !VALUED.has(args[i - 1] ?? ""));
   const has = (flag: string) => args.includes(flag);
   const get = (flag: string) => {
@@ -72,10 +100,9 @@ function parseArgs(argv: string[]): Cli {
   if (!planPath) {
     throw new Error(
       "Usage: ds-build <plan.yaml> [--out <dir>] [--concurrency <n>] [--dry-run] [--strict] " +
-        "[--state [dir]] [--dashboard [path]] [--status [path]] [--repo <existing-repo>] [--subscription | --api] [--run-id <id>]\n" +
+        "[--state [dir]] [--dashboard [path]] [--status [path]] [--repo <existing-repo>] [--subscription | --api]\n" +
         "       ds-build sync <project-dir> [--plan <file>] [--dry-run]\n" +
-        "       ds-build airspace <list | draft <plan.yaml> | check <plan.yaml>>\n" +
-        "       ds-build local-runner [--once]",
+        "       ds-build airspace <list | draft <plan.yaml> | check <plan.yaml>>",
     );
   }
   const out = get("--out") ?? join(process.cwd(), "builds");
@@ -118,7 +145,6 @@ function parseArgs(argv: string[]): Cli {
     repo,
     maxUsd,
     auth: resolveAuthMode({ subscription: has("--subscription"), api: has("--api") }),
-    runId: get("--run-id"),
   };
 }
 
@@ -127,14 +153,41 @@ function truncate(s: string, n = 180): string {
   return flat.length > n ? flat.slice(0, n) + "…" : flat;
 }
 
-/** Release hook for the run's airspace claim, so every exit path frees it. */
-let releaseAirspace: (() => Promise<void>) | undefined;
+/** The running claim, so shutdown() and every exit path can stop the work and free it. */
+let current: { release: () => Promise<void>; abort: (reason: string) => void } | undefined;
 
-async function main() {
-  if (SUBCOMMANDS.has(process.argv[2] ?? "")) {
-    process.exit(await runSubcommand(process.argv.slice(2)));
+/**
+ * Stop the run: abort in-flight agents, kill every child process tree the
+ * harness started (and wait until they are confirmed gone), THEN release the
+ * airspace claim. Called by the SIGINT/SIGTERM handlers; exported for the checks.
+ * `watch` lists extra pids (e.g. known grandchildren) that must be gone too.
+ */
+export async function shutdown(reason: string, opts: { watch?: number[] } = {}): Promise<void> {
+  const c = current;
+  c?.abort(reason);
+  await killAllTrees({ watch: opts.watch });
+  await c?.release();
+  current = undefined;
+}
+
+/** Returns the process exit code: 0 ok, 1 failed, 3 held, 4 airspace lost mid-run, 5 airspace refused. */
+export async function main(argv: string[] = process.argv, deps: CliDeps = {}): Promise<number> {
+  try {
+    return await run(argv, deps);
+  } catch (e) {
+    await current?.release();
+    current = undefined;
+    if (e instanceof PlanError) console.error(`✗ Invalid plan: ${e.message}`);
+    else console.error(`✗ ${(e as Error).message}`);
+    return e instanceof AirspaceError ? 5 : 1;
   }
-  const cli = parseArgs(process.argv);
+}
+
+async function run(argv: string[], deps: CliDeps): Promise<number> {
+  if (SUBCOMMANDS.has(argv[2] ?? "")) {
+    return await runSubcommand(argv.slice(2));
+  }
+  const cli = parseArgs(argv);
   // loadPlan prints each warning to stderr as it loads; we also capture the list
   // so the summary can show a count and --strict can turn any warning into a
   // non-zero exit. A scalar `project:` still hard-fails inside loadPlan — but its
@@ -201,13 +254,13 @@ async function main() {
     if (cli.auth === "api" && !process.env.ANTHROPIC_API_KEY) {
       console.error("✗ --api needs ANTHROPIC_API_KEY. Drop --api to run on your Claude subscription.");
       console.error("  (Use --dry-run to preview the execution plan without any login.)");
-      process.exit(1);
+      return 1;
     }
     if (cli.auth === "subscription") {
       const problem = subscriptionLoginProblem();
       if (problem) {
         console.error(`✗ ${problem}`);
-        process.exit(1);
+        return 1;
       }
     }
   }
@@ -218,10 +271,53 @@ async function main() {
     if (cli.repo && !existsSync(repoPath)) {
       console.error(`✗ --repo path does not exist: ${repoPath}`);
       console.error("  Point --repo at an existing repo, or omit it to build fresh under --out.");
-      process.exit(1);
+      return 1;
     }
-    mkdirSync(repoPath, { recursive: true });
   }
+
+  // AIRSPACE (hard block). Claim every declared resource — plus the repo: of every
+  // claimed git folder — in one transaction before anything dispatches or writes.
+  // Held -> exit 3 naming the holder. Refused (unclaimed build target, lease
+  // settings, clock, wrong registry) or unreachable -> exit 5: never launch
+  // unchecked. No override, no flag, no env var.
+  let claim: RunClaim | undefined;
+  const runController = new AbortController();
+  if (!cli.dryRun) {
+    const runId = newRunId("local");
+    const root =
+      deps.projectsRoot ?? findProjectsRoot(repoPath) ?? findProjectsRoot(cli.planPath) ?? findProjectsRoot(process.cwd());
+    try {
+      const { leaseMs, heartbeatMs } = leaseSettings();
+      checkBuildTarget(repoPath, plan.airspace, root);
+      claim = await claimAirspaceForRun({
+        registry: deps.registry ?? openAirspaceRegistry(),
+        plan,
+        runId,
+        lane: "local",
+        derived: deriveRepoKeys(plan.airspace, root),
+        leaseMs,
+        heartbeatMs,
+        log: (_lvl, msg) => console.warn(`  ⚠ ${msg}`),
+      });
+    } catch (e) {
+      const msg = (e as Error).message;
+      console.error(
+        e instanceof AirspaceError
+          ? `✗ ${msg}`
+          : `✗ airspace: registry unreachable, so nothing was launched: ${msg}`,
+      );
+      return 5;
+    }
+    if (!claim.granted) {
+      console.error(`✗ ${claim.message}`);
+      console.error("  Launch blocked. It can launch once that run finishes or its lease expires.");
+      return 3;
+    }
+    current = { release: claim.release, abort: (reason) => runController.abort(reason) };
+    console.log(`▸ Claimed:     run ${runId} (${claim.resources.length} resources)\n`);
+  }
+
+  if (!cli.dryRun) mkdirSync(repoPath, { recursive: true });
 
   const agentCount = plan.tasks.filter((t) => isBuildExecutor(t.executor) && t.auto).length;
   const codexCount = plan.tasks.filter((t) => t.executor === "codex" && t.auto).length;
@@ -239,39 +335,6 @@ async function main() {
   );
 
   console.log(`▸ Airspace:    ${plan.airspace.join(", ")}`);
-
-  // AIRSPACE (hard block). Claim every declared resource in one transaction
-  // before anything dispatches. Held -> exit 3 naming the holder. Registry
-  // unreachable -> exit 1: fail-closed, never launch unchecked. No override.
-  let claim: RunClaim | undefined;
-  if (!cli.dryRun) {
-    const runId = cli.runId ?? newRunId("local");
-    try {
-      claim = await claimAirspaceForRun({
-        registry: openAirspaceRegistry(),
-        plan,
-        runId,
-        lane: "local",
-        log: (_lvl, msg) => console.warn(`  ⚠ ${msg}`),
-      });
-    } catch (e) {
-      console.error(`✗ Airspace registry unreachable, so nothing was launched: ${(e as Error).message}`);
-      console.error("  Fix Google auth (gcloud auth application-default login) and launch again.");
-      process.exit(1);
-    }
-    if (!claim.granted) {
-      console.error(`✗ ${claim.message}`);
-      console.error("  Launch blocked. It can launch once that run finishes or its lease expires.");
-      process.exit(3);
-    }
-    releaseAirspace = claim.release;
-    const onSignal = (code: number) => () => {
-      void (releaseAirspace?.() ?? Promise.resolve()).finally(() => process.exit(code));
-    };
-    process.once("SIGINT", onSignal(130));
-    process.once("SIGTERM", onSignal(143));
-    console.log(`▸ Claimed:     run ${runId}${claim.adopted ? " (adopted the cockpit's claim)" : ""}\n`);
-  }
 
   // Gate battery (whetstone W1): how much of the build the operator can unlock
   // by clearing gates up front, and which gates legitimately wait for the build.
@@ -324,6 +387,9 @@ async function main() {
     dryRun: cli.dryRun,
     capReached: () => cost.reached(runCapUsd),
     halt: claim?.granted ? claim.halt : undefined,
+    signal: claim?.granted ? AbortSignal.any([claim.signal, runController.signal]) : undefined,
+    beforeCommit: claim?.granted ? claim.confirm : undefined,
+    taskRunner: deps.taskRunner,
     onEvent: (e) => {
       if (e.type === "task-done") cost.add(e.result.usage?.costUsd, e.result.verify?.usage?.costUsd);
       stateWriter?.handleEvent(e);
@@ -351,7 +417,11 @@ async function main() {
     },
   });
 
-  await releaseAirspace?.();
+  const lostReason = claim?.granted ? claim.halt() : undefined;
+  if (current) {
+    await current.release();
+    current = undefined;
+  }
   stateWriter?.finalize(results);
   report(results, Date.now() - started, cli.dryRun, planWarnings.length, cli.strict);
   if (!cli.dryRun) {
@@ -365,7 +435,11 @@ async function main() {
   // --strict promotes any plan warning to a failure; without it warnings are
   // informational and never change the exit code.
   const strictFail = cli.strict && planWarnings.length > 0;
-  process.exit(failed > 0 || strictFail ? 1 : 0);
+  if (lostReason) {
+    console.error(`✗ ${lostReason}`);
+    return 4;
+  }
+  return failed > 0 || strictFail ? 1 : 0;
 }
 
 /**
@@ -412,9 +486,21 @@ function report(
   }
 }
 
-main().catch(async (e) => {
-  await releaseAirspace?.();
-  if (e instanceof PlanError) console.error(`✗ Invalid plan: ${e.message}`);
-  else console.error(`✗ ${(e as Error).message}`);
-  process.exit(1);
-});
+/** True when this file is the process entry (the ds-build bin), not an import from the checks. */
+function isEntry(): boolean {
+  try {
+    return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntry()) {
+  // Signals stop the work, kill child trees, confirm them gone, THEN release.
+  const onSignal = (code: number, name: string) => () => {
+    void shutdown(`${name} received`).finally(() => process.exit(code));
+  };
+  process.once("SIGINT", onSignal(130, "SIGINT"));
+  process.once("SIGTERM", onSignal(143, "SIGTERM"));
+  main(process.argv).then((code) => process.exit(code));
+}

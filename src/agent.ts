@@ -100,6 +100,14 @@ function readUsage(message: {
   };
 }
 
+/** An AbortController that aborts when `signal` does (the SDK takes a controller, not a signal). */
+function linkedController(signal: AbortSignal): AbortController {
+  const c = new AbortController();
+  if (signal.aborted) c.abort(signal.reason);
+  else signal.addEventListener("abort", () => c.abort(signal.reason), { once: true });
+  return c;
+}
+
 /**
  * Run one task to completion in the target repo, headlessly.
  * Streams the agent's messages to `onMessage` (for live logging) and
@@ -111,6 +119,7 @@ export async function runTask(
   repoPath: string,
   onMessage?: (text: string) => void,
   integrations?: AgentIntegrations,
+  signal?: AbortSignal,
 ): Promise<TaskResult> {
   const start = Date.now();
   // Resolve the model, flooring it up when the task's sensitivity demands it.
@@ -146,6 +155,8 @@ export async function runTask(
         permissionMode: "acceptEdits",
         maxTurns: 60,
         env: claudeEnv(),
+        // Airspace loss aborts the agent mid-task (the SDK kills its claude subprocess).
+        ...(signal ? { abortController: linkedController(signal) } : {}),
         ...(eff?.mcpServers ? { mcpServers: eff.mcpServers } : {}),
       },
     })) {
@@ -234,6 +245,7 @@ export async function runVerify(
   repoPath: string,
   onMessage?: (text: string) => void,
   integrations?: AgentIntegrations,
+  signal?: AbortSignal,
 ): Promise<VerifyRecord> {
   const start = Date.now();
   const model = task.verifyModel ?? VERIFY_MODEL;
@@ -251,6 +263,7 @@ export async function runVerify(
         permissionMode: "acceptEdits",
         maxTurns: 30,
         env: claudeEnv(),
+        ...(signal ? { abortController: linkedController(signal) } : {}),
         ...(integrations?.mcpServers ? { mcpServers: integrations.mcpServers } : {}),
       },
     })) {

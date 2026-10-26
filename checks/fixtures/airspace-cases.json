@@ -1,0 +1,150 @@
+{
+  "_doc": "Shared airspace cases. ds-build-agent (checks/airspace.test.mjs) and handoff-watcher (tests/test_airspace.py) both run this file; the watcher vendors a byte-identical copy. Times are epoch ms in the server-anchored frame.",
+  "normalize": [
+    {"in": "path:Portfolios\\Own-Products\\FIG\\", "out": "path:portfolios/own-products/fig"},
+    {"in": "path:./a//b/", "out": "path:a/b"},
+    {"in": "path:a/./b/.", "out": "path:a/b"},
+    {"in": "path:projects/portfolios/x", "out": "path:portfolios/x"},
+    {"in": "path:abs:C:\\Users\\Marcu\\AppData\\Local\\X\\", "out": "path:abs:c:/users/marcu/appdata/local/x"},
+    {"in": "path:abs:/srv/./data//x/", "out": "path:abs:/srv/data/x"},
+    {"in": "repo:https://github.com/DigitalSolomon-ops/The-Creator.git", "out": "repo:digitalsolomon-ops/the-creator"},
+    {"in": "repo:https://user:tok3n@github.com/DigitalSolomon-ops/The-Creator.git/", "out": "repo:digitalsolomon-ops/the-creator"},
+    {"in": "repo:https://github.com/o/y.git/", "out": "repo:o/y"},
+    {"in": "repo:git@github.com:O/Y.git", "out": "repo:o/y"},
+    {"in": "repo:ssh://git@github.com/O/Y.git", "out": "repo:o/y"},
+    {"in": "repo:ds-build-agent", "out": "repo:digitalsolomon-ops/ds-build-agent"},
+    {"in": "ghl_pipeline: OwTVyp / Pipe9 ", "out": "ghl_pipeline:OwTVyp/Pipe9"},
+    {"in": "ghl_location:OwTVypw5mcI0oznL5Bgd", "out": "ghl_location:OwTVypw5mcI0oznL5Bgd"},
+    {"in": "N8N_Workflow:lead-router", "out": "n8n_workflow:lead-router"},
+    {"in": "nocolon", "error": true},
+    {"in": "path:C:/x", "error": true},
+    {"in": "path:/abs", "error": true},
+    {"in": "path:a/../b", "error": true},
+    {"in": "path:a/*", "error": true},
+    {"in": "path:", "error": true},
+    {"in": "path:projects", "error": true},
+    {"in": "path:abs:relative/x", "error": true},
+    {"in": "path:abs:C:/", "error": true},
+    {"in": "ghl_pipeline:Partner Sales", "error": true},
+    {"in": ":x", "error": true},
+    {"in": "9x:y", "error": true}
+  ],
+  "overlap": [
+    {"a": "path:a/b", "b": "path:a/b/c", "overlap": true},
+    {"a": "path:a/b/c", "b": "path:a/b", "overlap": true},
+    {"a": "path:a/b", "b": "path:a/b", "overlap": true},
+    {"a": "path:a/b", "b": "path:a/bc", "overlap": false},
+    {"a": "path:abs:c:/x/y", "b": "path:abs:c:/x", "overlap": true},
+    {"a": "path:abs:c:/x", "b": "path:x", "overlap": false},
+    {"a": "ghl_location:AbC", "b": "ghl_location:abc", "overlap": false},
+    {"a": "ghl_pipeline:L1/P1", "b": "ghl_pipeline:L1/P1", "overlap": true},
+    {"a": "ghl_pipeline:L1/P1", "b": "ghl_pipeline:L2/P1", "overlap": false},
+    {"a": "repo:x/y", "b": "path:x/y", "overlap": false},
+    {"a": "repo:o/y", "b": "repo:o/y", "overlap": true}
+  ],
+  "path_key": [
+    {"abs": "C:\\Users\\marcu\\Projects\\portfolios\\internal-tools\\ds-build-agent", "root": "C:\\Users\\marcu\\Projects", "out": "path:portfolios/internal-tools/ds-build-agent"},
+    {"abs": "c:/users/MARCU/projects/Portfolios/x/y/", "root": "C:\\Users\\marcu\\Projects", "out": "path:portfolios/x/y"},
+    {"abs": "C:\\Users\\marcu\\AppData\\Local\\ds-worktrees\\solomon-airspace", "root": "C:\\Users\\marcu\\Projects", "out": "path:abs:c:/users/marcu/appdata/local/ds-worktrees/solomon-airspace"},
+    {"abs": "C:\\Users\\marcu\\Projects-old\\x", "root": "C:\\Users\\marcu\\Projects", "out": "path:abs:c:/users/marcu/projects-old/x"}
+  ],
+  "block": [
+    {"in": ["path:portfolios/x", "repo:b"], "out": ["path:portfolios/x", "repo:digitalsolomon-ops/b"]},
+    {"in": ["path:portfolios"], "error": true},
+    {"in": ["path:abs:C:/tmp/work"], "out": ["path:abs:c:/tmp/work"]},
+    {"in": [], "error": true}
+  ],
+  "registry": [
+    {
+      "name": "time: idle registry grants after lease",
+      "now": 2000000,
+      "head": {"registry_id": "solomon-airspace/local-builds/v1", "updated_at": 1000000},
+      "claims": [{"run_id": "dead", "plan_name": "old", "lane": "local", "resources": ["path:a/b"], "status": "active", "acquired_at": 1000000, "heartbeat_at": 1000000, "lease_expires_at": 1300000}],
+      "acquire": {"run_id": "new", "plan_name": "next", "lane": "local", "resources": ["path:a/b"]},
+      "expect": "granted"
+    },
+    {
+      "name": "time: live claim still holds",
+      "now": 1200000,
+      "head": {"registry_id": "solomon-airspace/local-builds/v1", "updated_at": 1000000},
+      "claims": [{"run_id": "alive", "plan_name": "old", "lane": "cloud", "resources": ["path:a/b"], "status": "active", "acquired_at": 1000000, "heartbeat_at": 1000000, "lease_expires_at": 1300000}],
+      "acquire": {"run_id": "new", "plan_name": "next", "lane": "local", "resources": ["path:a/b/c"]},
+      "expect": "held",
+      "held_message_prefix": "held: conflicts with old on path:a/b"
+    },
+    {
+      "name": "time: poisoned head fails closed",
+      "now": 1000000,
+      "head": {"registry_id": "solomon-airspace/local-builds/v1", "updated_at": 9000000},
+      "claims": [],
+      "acquire": {"run_id": "new", "plan_name": "next", "lane": "local", "resources": ["path:a/b"]},
+      "expect": "refused",
+      "refused_contains": "registry clock ahead"
+    },
+    {
+      "name": "registry: foreign id refuses",
+      "now": 1000000,
+      "head": {"registry_id": "someone-else/v9", "updated_at": 999000},
+      "claims": [],
+      "acquire": {"run_id": "new", "plan_name": "next", "lane": "local", "resources": ["path:a/b"]},
+      "expect": "refused",
+      "refused_contains": "registry mismatch"
+    },
+    {
+      "name": "registry: empty db stamps id",
+      "now": 1000000,
+      "head": {},
+      "claims": [],
+      "acquire": {"run_id": "new", "plan_name": "next", "lane": "local", "resources": ["path:a/b"]},
+      "expect": "granted",
+      "head_after_registry_id": "solomon-airspace/local-builds/v1"
+    },
+    {
+      "name": "adopt: released claim not adopted, fresh acquire instead",
+      "now": 1000000,
+      "head": {"registry_id": "solomon-airspace/local-builds/v1"},
+      "claims": [{"run_id": "r1", "plan_name": "p", "lane": "cloud", "resources": ["path:a/b", "plan:p"], "declared": ["path:a/b", "plan:p"], "status": "released", "adoptable": false, "acquired_at": 900000, "heartbeat_at": 900000, "lease_expires_at": 1200000}],
+      "acquire": {"run_id": "r1", "plan_name": "p", "lane": "cloud", "resources": ["path:a/b", "plan:p"]},
+      "expect": "granted",
+      "adopted": false
+    },
+    {
+      "name": "adopt: second adoption held",
+      "now": 1000000,
+      "head": {"registry_id": "solomon-airspace/local-builds/v1"},
+      "claims": [{"run_id": "r1", "plan_name": "p", "lane": "cloud", "resources": ["path:a/b", "plan:p"], "declared": ["path:a/b", "plan:p"], "status": "active", "adoptable": false, "acquired_at": 900000, "heartbeat_at": 900000, "lease_expires_at": 1200000}],
+      "acquire": {"run_id": "r1", "plan_name": "p", "lane": "cloud", "resources": ["path:a/b", "plan:p"]},
+      "expect": "held"
+    },
+    {
+      "name": "adopt: cockpit claim adopted once",
+      "now": 1000000,
+      "head": {"registry_id": "solomon-airspace/local-builds/v1"},
+      "claims": [{"run_id": "r1", "plan_name": "p", "lane": "cloud", "resources": ["path:a/b", "plan:p", "repo:o/x"], "declared": ["path:a/b", "plan:p"], "status": "active", "adoptable": true, "acquired_at": 900000, "heartbeat_at": 900000, "lease_expires_at": 1200000}],
+      "acquire": {"run_id": "r1", "plan_name": "p", "lane": "cloud", "resources": ["path:a/b", "plan:p"]},
+      "expect": "granted",
+      "adopted": true
+    },
+    {
+      "name": "adopt: local lane never adopts",
+      "now": 1000000,
+      "head": {"registry_id": "solomon-airspace/local-builds/v1"},
+      "claims": [{"run_id": "r1", "plan_name": "p", "lane": "cloud", "resources": ["path:a/b", "plan:p"], "declared": ["path:a/b", "plan:p"], "status": "active", "adoptable": true, "acquired_at": 900000, "heartbeat_at": 900000, "lease_expires_at": 1200000}],
+      "acquire": {"run_id": "r1", "plan_name": "p", "lane": "local", "resources": ["path:a/b", "plan:p"]},
+      "expect": "held"
+    },
+    {
+      "name": "acquire: partial conflict writes nothing",
+      "now": 1000000,
+      "head": {"registry_id": "solomon-airspace/local-builds/v1"},
+      "claims": [{"run_id": "h", "plan_name": "holder", "lane": "local", "resources": ["ghl_location:L1"], "status": "active", "acquired_at": 900000, "heartbeat_at": 900000, "lease_expires_at": 1200000}],
+      "acquire": {"run_id": "new", "plan_name": "next", "lane": "local", "resources": ["path:a/b", "repo:o/z", "ghl_location:L1"]},
+      "expect": "held",
+      "claim_written": false
+    }
+  ],
+  "clock": [
+    {"name": "time: slow round-trip discarded", "rtts": [6000, 6000, 100], "server": [111, 222, 5000000], "expect_now_at_mono_mid": 5000000},
+    {"name": "time: three slow round-trips refuse", "rtts": [6000, 7000, 8000], "server": [1, 2, 3], "expect": "refused"}
+  ]
+}

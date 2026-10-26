@@ -97,6 +97,13 @@ export function validatePlan(raw: unknown, opts: ValidateOptions = {}): BuildPla
       : "";
     throw new PlanError(`${e.message}${hint}`);
   }
+  // A plan that touches GHL must say WHICH sub-account, or its GHL work is unclaimed.
+  if (tasks.some((t) => t.executor === "ghl") && !airspace.some((k) => k.startsWith("ghl_location:"))) {
+    throw new PlanError(
+      "This plan has `executor: ghl` tasks but its airspace declares no `ghl_location:`. " +
+        "Declare the sub-account(s) it writes to (airspace.ghl_locations).",
+    );
+  }
 
   // Plan-level shared_files apply to every scoped task, alongside its own.
   const planShared = strArray(p.shared_files, "`shared_files`") ?? [];

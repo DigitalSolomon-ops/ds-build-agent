@@ -5,10 +5,12 @@
  *   ds-build airspace list                                 live claims + held launches
  *   ds-build airspace check <plan.yaml>                    would this plan be held right now?
  *   ds-build airspace draft <plan.yaml>                    draft an airspace block for review
- *   ds-build local-runner [--once]                         run cockpit-launched Local Builds plans
+ *
+ * There is no local plan runner: handoff-watcher (`claude -p`) is the only
+ * unattended local runner (Marcus, 2026-10-26). A synced plan reaches it as a
+ * Local Builds brief through the cockpit's "Send to Local Builds".
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -16,9 +18,8 @@ import { loadPlan } from "./parser.js";
 import { claimResources, draftAirspaceYaml, findConflicts, formatHeld } from "./airspace.js";
 import { openAirspaceRegistry } from "./airspace-launch.js";
 import { creatorSyncBackend, findProjectsRoot, syncProject } from "./sync.js";
-import { creatorRunnerBackend, runLaunch, runnerPass } from "./local-runner.js";
 
-export const SUBCOMMANDS = new Set(["sync", "airspace", "local-runner"]);
+export const SUBCOMMANDS = new Set(["sync", "airspace"]);
 
 const harnessRoot = resolve(fileURLToPath(import.meta.url), "..", "..");
 
@@ -83,13 +84,13 @@ export async function runSubcommand(argv: string[]): Promise<number> {
       const file = args[1];
       if (!file) return (console.error("Usage: ds-build airspace check <plan.yaml>"), 2);
       const plan = loadPlan(resolve(file), { quiet: true });
-      const conflicts = findConflicts(claimResources(plan.name, plan.airspace), await registry.listActive(), "", Date.now());
+      const conflicts = findConflicts(claimResources(plan.name, plan.airspace), await registry.listActive(), "", await registry.now());
       console.log(conflicts.length ? `✗ would be ${formatHeld(conflicts)}` : `▸ clear: ${plan.name} could launch now`);
       return conflicts.length ? 3 : 0;
     }
     if (sub === "list" || sub === undefined) {
-      const now = Date.now();
       const active = await registry.listActive();
+      const now = await registry.now();
       const held = await registry.listHeld();
       console.log(`Active claims (${active.length})`);
       for (const c of active) {
@@ -102,40 +103,6 @@ export async function runSubcommand(argv: string[]): Promise<number> {
     }
     console.error("Usage: ds-build airspace <list | check <plan.yaml> | draft <plan.yaml>>");
     return 2;
-  }
-
-  if (cmd === "local-runner") {
-    if (!root) {
-      console.error("✗ Could not find the Projects root (the folder holding studio.yaml).");
-      return 1;
-    }
-    const backend = await creatorRunnerBackend();
-    const maxPlans = Number(process.env.LOCAL_RUNNER_MAX_PLANS) > 0 ? Number(process.env.LOCAL_RUNNER_MAX_PLANS) : 2;
-    if (args.includes("--once")) {
-      const ids = await runnerPass({ backend, projectsRoot: root, maxPlans });
-      console.log(ids.length ? `▸ ran ${ids.join(", ")}` : "▸ nothing requested");
-      return 0;
-    }
-    console.log(`▸ local-runner on ${hostname()}: polling for Local Builds launches (max ${maxPlans} plans at once)`);
-    const inFlight = new Map<string, Promise<unknown>>();
-    for (;;) {
-      try {
-        while (inFlight.size < maxPlans) {
-          const rec = await backend.claimNext(hostname(), Date.now());
-          if (!rec) break;
-          console.log(`  ⏵ ${rec.projectId} (run ${rec.localLaunch.runId})`);
-          const p = runLaunch(rec, { backend, projectsRoot: root }).then((state) => {
-            console.log(`  ${state === "done" ? "✓" : "✗"} ${rec.projectId} -> ${state}`);
-            inFlight.delete(rec.projectId);
-          });
-          inFlight.set(rec.projectId, p);
-        }
-        await backend.beat({ host: hostname(), beatAt: Date.now(), running: [...inFlight.keys()] });
-      } catch (e) {
-        console.warn(`  ⚠ poll failed (retrying): ${(e as Error).message}`);
-      }
-      await new Promise((r) => setTimeout(r, 10_000));
-    }
   }
 
   return 2;

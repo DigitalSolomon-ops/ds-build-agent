@@ -68,7 +68,7 @@ airspace:
   ghl_locations:
     - LOCATION_ID_HERE
   ghl_pipelines:
-    - "Partner Sales"
+    - "LOCATION_ID_HERE/PIPELINE_ID_HERE"   # <locationId>/<pipelineId>
 
 tasks:
 

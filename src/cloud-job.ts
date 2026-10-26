@@ -9,12 +9,18 @@
  *   DRY_RUN         "true" to route without building
  *   GCP_PROJECT_ID  Firestore/Storage project
  *   ANTHROPIC_API_KEY  injected from Secret Manager by the job definition
- *   AIRSPACE_LEASE_MS / AIRSPACE_HEARTBEAT_MS  optional lease tuning (airspace.ts defaults)
+ *   AIRSPACE_LEASE_MS / AIRSPACE_HEARTBEAT_MS  optional lease tuning (bounded in airspace.ts)
  *
  * AIRSPACE: before anything dispatches, the runner adopts the claim creator-solomon
- * acquired at Launch (same RUN_ID) or acquires it fresh. Held -> runs/{id}.status
- * "held" with the conflict named, project back to "drafted", exit 3, nothing built.
- * The claim is heartbeated while the run works and released when it ends.
+ * acquired at Launch (same RUN_ID, adoptable once) or acquires it fresh. Held ->
+ * runs/{id}.status "held" with the conflict named, project back to "drafted",
+ * exit 3, nothing built. The claim is heartbeated and fenced while the run works;
+ * losing it aborts in-flight tasks (exit 4). It is released when the run ends.
+ *
+ * GITHUB: the runner deliberately puts NO GitHub token in the agents' environment
+ * (Marcus, 2026-10-26): nothing in the harness pushes, and a shared token would
+ * let an agent write to repos this run never claimed. A per-run token scoped to
+ * the claimed repo: keys is the follow-up (docs/APPLY-PACK-solomon-airspace.md).
  *
  * Status lifecycle written to projects/{PROJECT_DOC_ID}.state:
  *   running -> waiting (human tasks / launch gate) | stuck (task failed)
@@ -22,28 +28,80 @@
  */
 import { Firestore } from "@google-cloud/firestore";
 import { Storage } from "@google-cloud/storage";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { validatePlan } from "./parser.js";
 import { orchestrate } from "./orchestrator.js";
 import { writeOperatorAnswers, buildOperatorContext, type OperatorAnswer } from "./operator-writeback.js";
 import type { TaskResult } from "./types.js";
 import { isBuildExecutor } from "./types.js";
-import { claimAirspaceForRun, openAirspaceRegistry, type RunClaim } from "./airspace-launch.js";
+import { AirspaceError, normalizeResource, type AirspaceRegistry } from "./airspace.js";
+import { claimAirspaceForRun, leaseSettings, openAirspaceRegistry, type RunClaim } from "./airspace-launch.js";
+import { killAllTrees } from "./proc-tree.js";
+import type { OrchestratorOptions } from "./orchestrator.js";
 
-const env = (k: string, fallback?: string): string => {
-  const v = process.env[k] ?? fallback;
-  if (v === undefined) throw new Error(`Missing env: ${k}`);
-  return v;
-};
+/**
+ * What main() runs with. Production builds the real clients; the checks inject a
+ * fake Firestore/Storage, a memory registry and a fake task runner so the real
+ * entry point runs in-process. No env var or flag selects a backend.
+ */
+export interface CloudDeps {
+  db?: Firestore;
+  storage?: Storage;
+  registry?: AirspaceRegistry;
+  taskRunner?: OrchestratorOptions["taskRunner"];
+  /** Secret Manager lookup by credentialRefs slot id; defaults to the real client. */
+  secretVal?: (slotDocId: string) => Promise<string | undefined>;
+}
 
-const db = new Firestore({ projectId: env("GCP_PROJECT_ID"), ignoreUndefinedProperties: true });
-/** Release hook for this run's airspace claim, so the fatal path frees it too. */
-let releaseAirspace: (() => Promise<void>) | undefined;
-const storage = new Storage({ projectId: env("GCP_PROJECT_ID") });
+/** The running claim, so shutdown() and the fatal path can stop the work and free it. */
+let current: { release: () => Promise<void>; abort: (reason: string) => void } | undefined;
 
-async function main() {
+/** Abort in-flight work, kill child trees and confirm them gone, THEN release. */
+export async function shutdown(reason: string): Promise<void> {
+  const c = current;
+  c?.abort(reason);
+  await killAllTrees();
+  await c?.release();
+  current = undefined;
+}
+
+/** Returns the exit code: 0 ok, 1 failed, 3 held, 4 airspace lost mid-run, 5 airspace refused. */
+export async function main(procEnv: NodeJS.ProcessEnv = process.env, deps: CloudDeps = {}): Promise<number> {
+  const env = (k: string, fallback?: string): string => {
+    const v = procEnv[k] ?? fallback;
+    if (v === undefined) throw new Error(`Missing env: ${k}`);
+    return v;
+  };
+  const db = deps.db ?? new Firestore({ projectId: env("GCP_PROJECT_ID"), ignoreUndefinedProperties: true });
+  const storage = deps.storage ?? new Storage({ projectId: env("GCP_PROJECT_ID") });
+  try {
+    return await run(env, procEnv, db, storage, deps);
+  } catch (e) {
+    await current?.release();
+    current = undefined;
+    process.stdout.write(JSON.stringify({
+      severity: "ERROR", message: "cloud-job fatal", error: String(e), runId: procEnv.RUN_ID,
+    }) + "\n");
+    try {
+      await db.collection("runs").doc(env("RUN_ID")).set({ status: "finished", error: String(e), finishedAt: Date.now() }, { merge: true });
+      if (procEnv.DRY_RUN !== "true") {
+        await db.collection("projects").doc(env("PROJECT_DOC_ID")).update({ state: "stuck", updatedAt: Date.now() });
+      }
+    } catch { /* best effort */ }
+    return e instanceof AirspaceError ? 5 : 1;
+  }
+}
+
+async function run(
+  env: (k: string, fallback?: string) => string,
+  procEnv: NodeJS.ProcessEnv,
+  db: Firestore,
+  storage: Storage,
+  deps: CloudDeps,
+): Promise<number> {
   const planUri = env("PLAN_URI");
   const projectDocId = env("PROJECT_DOC_ID");
   const runId = env("RUN_ID");
@@ -75,7 +133,7 @@ async function main() {
   // lands — it is DELIBERATELY never written to runs/{id}.costUsd mid-run (that
   // rollup stays end-of-run and non-incremental; see §4c).
   const DEFAULT_RUN_CAP_USD = 25;
-  const envCap = Number(process.env.MAX_RUN_USD);
+  const envCap = Number(procEnv.MAX_RUN_USD);
   const runCapUsd = plan.policy.maxRunUsd
     ?? (Number.isFinite(envCap) && envCap > 0 ? envCap : DEFAULT_RUN_CAP_USD);
   let spentUsd = 0;
@@ -100,37 +158,46 @@ async function main() {
   const projectDoc = db.collection("projects").doc(projectDocId);
   const stamp = () => Date.now();
 
-  // 2a) AIRSPACE (hard block, no override). A dry run claims nothing.
+  // 2a) AIRSPACE (hard block, no override). A dry run claims nothing. The derived
+  // repo: keys sync wrote on the project record (this container has no local
+  // folders to derive them from) are claimed too, so both lanes claim one set.
   let claim: RunClaim | undefined;
+  const runController = new AbortController();
   if (!dryRun) {
+    let derived: string[] = [];
+    try {
+      const p = (await projectDoc.get()).data() as { airspace?: unknown } | undefined;
+      if (Array.isArray(p?.airspace)) derived = p!.airspace.filter((k): k is string => typeof k === "string").map(normalizeResource);
+    } catch { /* no record airspace: the plan's own block is the claim */ }
+    const { leaseMs, heartbeatMs } = leaseSettings(procEnv);
     claim = await claimAirspaceForRun({
-      registry: openAirspaceRegistry(),
+      registry: deps.registry ?? openAirspaceRegistry(),
       plan,
       runId,
       lane: "cloud",
+      derived,
+      leaseMs,
+      heartbeatMs,
       log: (lvl, msg) => log(lvl === "warn" ? "WARNING" : "INFO", msg),
     });
     if (!claim.granted) {
       log("WARNING", claim.message, { held: true });
       await runDoc.set({ status: "held", heldReason: claim.message, finishedAt: stamp() }, { merge: true });
       await projectDoc.update({ state: "drafted", updatedAt: stamp() });
-      process.exit(3);
+      return 3;
     }
-    releaseAirspace = claim.release;
-    // The cockpit's kill switch cancels the execution with SIGTERM: free the airspace on the way out.
-    process.once("SIGTERM", () => {
-      void (releaseAirspace?.() ?? Promise.resolve()).finally(() => process.exit(143));
-    });
+    current = { release: claim.release, abort: (reason) => runController.abort(reason) };
     log("INFO", `airspace: ${claim.adopted ? "adopted" : "acquired"} ${claim.resources.length} claim(s)`, { resources: claim.resources });
   }
 
   // merge: keep estCostUsd + executionName the launcher (creator-solomon)
-  // already stamped for guardrails accounting + the kill switch.
+  // already stamped for guardrails accounting + the kill switch. A dry run writes
+  // only its own run doc, never the project's lifecycle state.
   await runDoc.set({
     runId, projectId: projectDocId, planUri, dryRun,
     modelOverride: override, status: "running", startedAt: stamp(), tasks: {},
   }, { merge: true });
-  await projectDoc.update({ state: "running", updatedAt: stamp() });
+  if (!dryRun) await projectDoc.update({ state: "running", updatedAt: stamp() });
 
   const repoPath = join("/workspace", plan.name.replace(/[^\w.-]+/g, "-"));
   mkdirSync(repoPath, { recursive: true });
@@ -157,7 +224,7 @@ async function main() {
     // Attachments: own try so a missing bucket cannot lose the answers above.
     const attachmentNames: string[] = [];
     try {
-      const inBucket = process.env.CREATOR_BUCKET ?? `${env("GCP_PROJECT_ID")}-creator`;
+      const inBucket = procEnv.CREATOR_BUCKET ?? `${env("GCP_PROJECT_ID")}-creator`;
       const prefix = `project-inputs/${projectDocId}/`;
       const [files] = await storage.bucket(inBucket).getFiles({ prefix });
       const inputsDir = join(repoPath, "inputs");
@@ -189,29 +256,32 @@ async function main() {
   //     Location ID); n8n/Vapi/GitHub keys land in the agents' environment.
   //     All lookups are best-effort: a missing slot just means that hand
   //     stays in the pocket for this run.
-  const { SecretManagerServiceClient } = await import("@google-cloud/secret-manager");
-  const sm = new SecretManagerServiceClient();
-  const secretVal = async (slotDocId: string): Promise<string | undefined> => {
-    try {
-      const meta = await db.collection("credentialRefs").doc(slotDocId).get();
-      if (!meta.exists || !meta.data()!.set) return undefined;
-      const [v] = await sm.accessSecretVersion({ name: `${meta.data()!.ref}/versions/latest` });
-      return v.payload?.data?.toString();
-    } catch { return undefined; }
-  };
+  const secretVal = deps.secretVal ?? (await (async () => {
+    const { SecretManagerServiceClient } = await import("@google-cloud/secret-manager");
+    const sm = new SecretManagerServiceClient();
+    return async (slotDocId: string): Promise<string | undefined> => {
+      try {
+        const meta = await db.collection("credentialRefs").doc(slotDocId).get();
+        if (!meta.exists || !meta.data()!.set) return undefined;
+        const [v] = await sm.accessSecretVersion({ name: `${meta.data()!.ref}/versions/latest` });
+        return v.payload?.data?.toString();
+      } catch { return undefined; }
+    };
+  })());
   const slotId = (s: string) => s.replace(/[^a-zA-Z0-9_-]+/g, "-");
 
-  const [ghlPit, ghlLocation, n8nKey, vapiKey, githubPat, openaiKey] = await Promise.all([
+  // No GitHub token: see the header (airspace — an unclaimed repo must not be writable).
+  const [ghlPit, ghlLocation, n8nKey, vapiKey, openaiKey] = await Promise.all([
     secretVal(slotId(`${projectDocId}/ghl-pit`)),
     secretVal(slotId(`${projectDocId}/ghl-location`)),
     secretVal("global-n8n"),
     secretVal("global-vapi"),
-    secretVal("global-github"),
     secretVal("global-openai"),
   ]);
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.GH_TOKEN;
   if (n8nKey) { process.env.N8N_API_KEY = n8nKey; process.env.N8N_BASE_URL = "https://automation.digitalsolomon.com"; }
   if (vapiKey) process.env.VAPI_API_KEY = vapiKey;
-  if (githubPat) process.env.GITHUB_TOKEN = githubPat;
   // OpenAI key powers `executor: codex` tasks (codex exec). Set BOTH the standard
   // OpenAI var and Codex's own var so whichever the CLI honors works. This bills
   // OpenAI directly — OUT OF BAND from the run's USD cost cap, which brakes only
@@ -232,7 +302,7 @@ async function main() {
     : undefined;
   log("INFO",
     `integrations: ghl-mcp=${integrations ? "on (one sub-account)" : "off"}, ` +
-    `n8n=${n8nKey ? "on" : "off"}, vapi=${vapiKey ? "on" : "off"}, github=${githubPat ? "on" : "off"}, ` +
+    `n8n=${n8nKey ? "on" : "off"}, vapi=${vapiKey ? "on" : "off"}, github=off (by design), ` +
     `codex/openai=${openaiKey ? "on" : "off"}`,
   );
 
@@ -242,10 +312,13 @@ async function main() {
 
   const results: TaskResult[] = await orchestrate(plan, {
     repoPath,
-    concurrency: Number(process.env.CONCURRENCY ?? 2),
+    concurrency: Number(procEnv.CONCURRENCY ?? 2),
     dryRun,
     integrations,
     halt: claim?.granted ? claim.halt : undefined,
+    signal: claim?.granted ? AbortSignal.any([claim.signal, runController.signal]) : undefined,
+    beforeCommit: claim?.granted ? claim.confirm : undefined,
+    taskRunner: deps.taskRunner,
     // B2: stop dispatching once accumulated reported cost reaches the cap.
     capReached: () => {
       const over = spentUsd >= runCapUsd;
@@ -313,7 +386,11 @@ async function main() {
     },
   });
 
-  await releaseAirspace?.();
+  const lostReason = claim?.granted ? claim.halt() : undefined;
+  if (current) {
+    await current.release();
+    current = undefined;
+  }
 
   // 4) Final lifecycle state — the operator's vocabulary.
   const failed = results.filter((r) => r.status === "failed").length;
@@ -332,7 +409,7 @@ async function main() {
       const tarPath = `/tmp/${runId}.tar.gz`;
       execFileSync("tar", ["-czf", tarPath, "-C", repoPath, "."]);
       const artifact = `deliverables/${projectDocId}/${runId}-workspace.tar.gz`;
-      const bucket = process.env.CREATOR_BUCKET ?? `${env("GCP_PROJECT_ID")}-creator`;
+      const bucket = procEnv.CREATOR_BUCKET ?? `${env("GCP_PROJECT_ID")}-creator`;
       await storage.bucket(bucket).upload(tarPath, { destination: artifact });
       await db.collection("deliverables").doc(projectDocId).set({
         projectId: projectDocId,
@@ -372,27 +449,37 @@ async function main() {
     ? { terminatedReason: "cost-cap", runCapUsd, runSpendUsd: Math.round(spentUsd * 1e4) / 1e4 }
     : {};
   await runDoc.set(
-    { status: "finished", finishedAt: stamp(), failed, deferred, skipped, ...usageRollup, ...capFields },
+    {
+      status: "finished", finishedAt: stamp(), failed, deferred, skipped, ...usageRollup, ...capFields,
+      ...(lostReason ? { terminatedReason: "airspace-lost", airspaceLost: lostReason } : {}),
+    },
     { merge: true },
   );
-  await projectDoc.update({ state: dryRun ? "drafted" : state, updatedAt: stamp() });
+  if (!dryRun) await projectDoc.update({ state: lostReason ? "stuck" : state, updatedAt: stamp() });
   const built = results.filter((r) => r.status === "success").length;
   log(cappedOut || failed > 0 ? "WARNING" : "INFO",
     `run ${state}: built ${built}, deferred ${deferred}, skipped ${skipped}, failed ${failed}` +
     (cappedOut ? ` — TERMINATED on cost cap ($${Math.round(spentUsd * 1e4) / 1e4} >= $${runCapUsd})` : "") +
     (reported.length ? ` — cost $${usageRollup.costUsd} over ${reported.length} task(s)` : " — cost not reported"),
     { state, built, deferred, skipped, failed, cappedOut, runCapUsd, spentUsd: Math.round(spentUsd * 1e4) / 1e4 });
-  process.exit(cappedOut || failed > 0 ? 1 : 0);
+  if (lostReason) return 4;
+  return cappedOut || failed > 0 ? 1 : 0;
 }
 
-main().catch(async (e) => {
-  await releaseAirspace?.();
-  process.stdout.write(JSON.stringify({
-    severity: "ERROR", message: "cloud-job fatal", error: String(e), runId: process.env.RUN_ID,
-  }) + "\n");
+/** True when this file is the process entry (the Cloud Run Job), not an import from the checks. */
+function isEntry(): boolean {
   try {
-    await db.collection("runs").doc(env("RUN_ID")).set({ status: "finished", error: String(e), finishedAt: Date.now() }, { merge: true });
-    await db.collection("projects").doc(env("PROJECT_DOC_ID")).update({ state: "stuck", updatedAt: Date.now() });
-  } catch { /* best effort */ }
-  process.exit(1);
-});
+    return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntry()) {
+  // The cockpit's kill switch cancels the execution with SIGTERM: stop the work,
+  // kill child trees, confirm them gone, THEN free the airspace.
+  process.once("SIGTERM", () => {
+    void shutdown("SIGTERM received").finally(() => process.exit(143));
+  });
+  main().then((code) => process.exit(code));
+}

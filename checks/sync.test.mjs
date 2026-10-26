@@ -1,5 +1,6 @@
 /**
- * Sync on command (Workstream 1 acceptance) and the Local Builds plan runner.
+ * Sync on command (Workstream 1 acceptance). There is no local plan runner any
+ * more (handoff-watcher is the only unattended local runner).
  * Offline: a throwaway Projects tree in a temp dir and an in-memory backend
  * standing in for The Creator's Firestore + bucket.
  *
@@ -7,6 +8,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,13 +17,12 @@ import { parse as parseYaml } from "yaml";
 
 const DIST = new URL("../dist/", import.meta.url);
 const S = await import(new URL("sync.js", DIST).href);
-const R = await import(new URL("local-runner.js", DIST).href);
 const { validatePlan } = await import(new URL("parser.js", DIST).href);
 
 const PLAN = `name: fig-build
 airspace:
   paths: [portfolios/own-products/fig]
-  ghl_pipelines: ["Partner Sales"]
+  ghl_pipelines: ["Loc1/PartnerSales"]
 deploy_policy:
   launch_gate: true
 tasks:
@@ -61,7 +63,7 @@ function memBackend() {
     docs, uploads, calls,
     async getProject(id) { return docs.has(id) ? structuredClone(docs.get(id)) : undefined; },
     async putProject(doc) { calls.put++; docs.set(doc.projectId, { ...docs.get(doc.projectId), ...structuredClone(doc) }); },
-    async uploadPlan(id, yaml) { calls.upload++; uploads.set(id, yaml); return `gs://test-creator/plans/${id}.plan.yaml`; },
+    async uploadPlan(id, bytes) { calls.upload++; uploads.set(id, Buffer.from(bytes)); return `gs://test-creator/plans/${id}.plan.yaml`; },
   };
 }
 
@@ -73,7 +75,9 @@ test("ACCEPT 1: sync on a project with an existing plan queues it without change
   assert.equal(r.action, "queued", r.message);
   assert.equal(r.syncState, "dry-run");
   assert.equal(readFileSync(join(dir, "plans/fig.plan.yaml"), "utf8"), PLAN, "plan file untouched");
-  assert.equal(b.uploads.get(r.projectId), PLAN, "the uploaded record is the plan, byte for byte");
+  assert.equal(b.uploads.get(r.projectId).toString("utf8"), PLAN, "the uploaded record is the plan, byte for byte");
+  const fileSha = createHash("sha256").update(readFileSync(join(dir, "plans/fig.plan.yaml"))).digest("hex");
+  assert.equal(createHash("sha256").update(b.uploads.get(r.projectId)).digest("hex"), fileSha, "stored copy hashes like the file");
   const doc = b.docs.get(r.projectId);
   assert.equal(doc.state, "drafted", "awaiting Launch, nothing executes");
   assert.equal(doc.syncState, "dry-run");
@@ -81,7 +85,8 @@ test("ACCEPT 1: sync on a project with an existing plan queues it without change
   assert.equal(doc.planPath, "portfolios/own-products/fig/plans/fig.plan.yaml");
   assert.equal(doc.localPath, "portfolios/own-products/fig");
   assert.deepEqual(doc.lanes, ["local", "cloud"], "one record, visible to both lanes");
-  assert.deepEqual(doc.airspace, ["ghl_pipeline:Partner Sales", "path:portfolios/own-products/fig"]);
+  assert.deepEqual(doc.airspace, ["ghl_pipeline:Loc1/PartnerSales", "path:portfolios/own-products/fig"]);
+  assert.equal(doc.planSha256, fileSha, "planSha256 is the hash of the plan file's raw bytes");
   assert.deepEqual(doc.dryRun, { wouldBuild: 2, deferred: 1, skipped: 0, tasks: 3 });
   assert.match(doc.planUri, /^gs:\/\//);
 });
@@ -134,7 +139,7 @@ test("sync: a changed plan updates the same record; a running record is refused"
   assert.equal(upd.action, "updated");
   assert.equal(upd.projectId, first.projectId);
   assert.equal(b.docs.get(first.projectId).createdAt, 1, "createdAt survives an update");
-  b.docs.get(first.projectId).localLaunch = { state: "running" };
+  b.docs.get(first.projectId).state = "running";
   writeFileSync(join(dir, "plan.yaml"), PLAN.replace("build a", "build c"));
   const busy = await S.syncProject({ projectArg: "fig", root, backend: b });
   assert.equal(busy.action, "refused");
@@ -185,62 +190,37 @@ test("sync --dry-run previews and writes nothing", async () => {
   assert.deepEqual(b.calls, { put: 0, upload: 0 });
 });
 
-/* ── Local Builds runner ───────────────────────────────────────────────────── */
-
-function runnerBackend(records) {
-  const queue = [...records];
-  const updates = [];
-  return {
-    updates,
-    async claimNext() { return queue.shift(); },
-    async update(id, patch) { updates.push({ id, ...patch }); },
-    async downloadPlan() { return PLAN; },
-    async beat() {},
-  };
-}
-const rec = (id, runId) => ({
-  projectId: id, name: id, planUri: "gs://b/p.yaml", localPath: "portfolios/own-products/fig",
-  localLaunch: { state: "running", runId, requestedAt: 1 },
+test("sync: derived repo written into synced plan", async () => {
+  const { root, mk } = tree();
+  const dir = mk("portfolios/own-products/fig", { "plan.yaml": PLAN });
+  const git = (...a) => execFileSync("git", ["-C", dir, ...a], { stdio: "ignore" });
+  git("init", "-q");
+  git("remote", "add", "origin", "https://github.com/DigitalSolomon-ops/fast-insurance-group.git");
+  const b = memBackend();
+  const r = await S.syncProject({ projectArg: "fig", root, backend: b });
+  assert.equal(r.action, "queued", r.message);
+  const doc = b.docs.get(r.projectId);
+  assert.ok(doc.airspace.includes("repo:digitalsolomon-ops/fast-insurance-group"), JSON.stringify(doc.airspace));
+  assert.ok(doc.airspace.includes("path:portfolios/own-products/fig"));
+  assert.equal(b.uploads.get(r.projectId).toString("utf8"), PLAN, "the plan itself is not rewritten");
 });
 
-test("runner: runs the CLI with the cockpit's run id (adopt) in-place, records done", async () => {
-  const b = runnerBackend([rec("p1", "local-abc")]);
-  let seen;
-  const n = await R.runnerPass({
-    backend: b, projectsRoot: "/projects", host: "blacktop",
-    spawnRun: async (args, onLine) => { seen = args; onLine("▸ Plan: fig-build"); return 0; },
-  });
-  assert.deepEqual(n, ["p1"]);
-  assert.ok(seen[0].endsWith("p1.plan.yaml"));
-  assert.equal(seen[seen.indexOf("--run-id") + 1], "local-abc");
-  assert.equal(seen[seen.indexOf("--concurrency") + 1], "3");
-  assert.match(seen[seen.indexOf("--repo") + 1].replace(/\\/g, "/"), /portfolios\/own-products\/fig$/);
-  const last = b.updates.at(-1);
-  assert.equal(last.state, "done");
-  assert.equal(last.exitCode, 0);
-});
-
-test("runner: an airspace hold (exit 3) is recorded as held with the CLI's message", async () => {
-  const b = runnerBackend([rec("p2", "local-def")]);
-  await R.runnerPass({
-    backend: b, projectsRoot: "/projects",
-    spawnRun: async (_a, onLine) => {
-      onLine("✗ held: conflicts with fast-insurance-group on ghl_pipeline:Partner Sales [run cloud-1, cloud lane]");
-      return 3;
-    },
-  });
-  const last = b.updates.at(-1);
-  assert.equal(last.state, "held");
-  assert.match(last.message, /^held: conflicts with fast-insurance-group on ghl_pipeline:Partner Sales/);
-});
-
-test("runner: log lines are redacted before they leave blacktop", () => {
-  assert.equal(R.redact("key sk-ant-api03-abcdefghijkl and ghp_abcdefghijklmnop"), "key [redacted] and [redacted]");
-  assert.equal(R.redact("Authorization: Bearer abc.def.ghijklmnop"), "Authorization: Bearer [redacted]");
-  assert.equal(R.stateForExit(0), "done");
-  assert.equal(R.stateForExit(3), "held");
-  assert.equal(R.stateForExit(1), "failed");
-  assert.equal(R.stateForExit(null), "failed");
+test("sync: no Architect call (a missing plan becomes a deterministic skeleton, offline)", async () => {
+  const { root, mk } = tree();
+  mk("portfolios/internal-tools/offline", { "project.yaml": "project:\n  key: offline\n" });
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw new Error("network forbidden in this test"); };
+  try {
+    const b = memBackend();
+    const r1 = await S.syncProject({ projectArg: "offline", root, backend: b });
+    const r2 = await S.syncProject({ projectArg: "offline", root, backend: memBackend() });
+    assert.equal(r1.action, "generated-for-review");
+    assert.equal(r1.draft, r2.draft, "deterministic");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(calls, 0, "sync made no network call (no Architect)");
 });
 
 test("sync: a same-named stray folder at the Projects root is never taken for the project", async () => {

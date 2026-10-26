@@ -38,6 +38,19 @@ export interface OrchestratorOptions {
    */
   halt?: () => string | undefined;
   /**
+   * Aborted when the run loses its airspace. Unlike `halt` (start nothing new),
+   * this stops work IN FLIGHT: it is handed to every build/verify runner, a task
+   * whose run was aborted is recorded `failed: airspace lost`, and nothing more is
+   * committed.
+   */
+  signal?: AbortSignal;
+  /**
+   * Called before every task commit; a returned reason refuses the commit (the
+   * task is failed with it). The airspace launcher renews the lease here, so a run
+   * never commits on a lease it cannot confirm.
+   */
+  beforeCommit?: () => Promise<string | undefined>;
+  /**
    * Override the adversarial verify runner (defaults to agent.runVerify). A test
    * seam, and the hook a caller uses to supply an escalated verify model.
    */
@@ -47,6 +60,7 @@ export interface OrchestratorOptions {
     repoPath: string,
     onMessage?: (text: string) => void,
     integrations?: AgentIntegrations,
+    signal?: AbortSignal,
   ) => Promise<VerifyRecord>;
   /**
    * Override the build runner for every build task (defaults to agent.runTask /
@@ -59,6 +73,7 @@ export interface OrchestratorOptions {
     repoPath: string,
     onMessage?: (text: string) => void,
     integrations?: AgentIntegrations,
+    signal?: AbortSignal,
   ) => Promise<TaskResult>;
 }
 
@@ -157,7 +172,9 @@ export async function orchestrate(
           // Checked first so a capped run halts uniformly rather than partly
           // routing through dep/gate logic. Tasks already running finish; their
           // pump() re-entry sees the cap still tripped and starts nothing.
-          const haltReason = opts.capReached?.() ? "Run cost cap reached — dispatch halted." : opts.halt?.();
+          const haltReason = opts.capReached?.()
+            ? "Run cost cap reached — dispatch halted."
+            : opts.halt?.() ?? (opts.signal?.aborted ? `Airspace lost: ${String(opts.signal.reason ?? "aborted")}` : undefined);
           if (haltReason) {
             const reason = haltReason;
             finish(id, { taskId: id, status: "skipped", error: reason, durationMs: 0 });
@@ -236,10 +253,24 @@ export async function orchestrate(
               })
             : buildRun(task, plan, opts.repoPath, (text) =>
                 opts.onEvent?.({ type: "task-log", task, text }),
-              opts.integrations);
+              opts.integrations, opts.signal);
 
           run
+            .catch((e: unknown): TaskResult => ({
+              taskId: id,
+              status: "failed",
+              error: (e as Error)?.message ?? String(e),
+              durationMs: 0,
+            }))
             .then(async (result) => {
+              // Airspace lost while this task ran: whatever it did is not ours to keep.
+              if (!opts.dryRun && opts.signal?.aborted) {
+                result = {
+                  ...result,
+                  status: "failed",
+                  error: `failed: airspace lost (${String(opts.signal.reason ?? "aborted")})`,
+                };
+              }
               // W3: a scoped task that wrote outside its declared boundary is
               // downgraded to failed BEFORE verify or commit — so it neither
               // lands a rollback commit nor unblocks dependents. Guarded so an
@@ -262,6 +293,7 @@ export async function orchestrate(
                   opts.repoPath,
                   (text) => opts.onEvent?.({ type: "task-log", task, text }),
                   opts.integrations,
+                  opts.signal,
                 ).catch(
                   (e: unknown): VerifyRecord => ({
                     passed: false,
@@ -275,6 +307,15 @@ export async function orchestrate(
                 );
                 result = gateSensitiveResult(task, result, verify);
                 opts.onEvent?.({ type: "task-verify", task, verify });
+              }
+              if (!opts.dryRun && result.status === "success" && plan.policy.commitAfterEachTask) {
+                // Never commit on a lease we cannot confirm.
+                const refuse = opts.signal?.aborted
+                  ? `airspace lost (${String(opts.signal.reason ?? "aborted")})`
+                  : await opts.beforeCommit?.();
+                if (refuse) {
+                  result = { ...result, status: "failed", error: `failed: commit refused — ${refuse}` };
+                }
               }
               if (!opts.dryRun && result.status === "success" && plan.policy.commitAfterEachTask) {
                 const r = result;

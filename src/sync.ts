@@ -17,6 +17,11 @@
  *   - No plan at all -> a skeleton plan is generated, queued as syncState
  *                       `review`, and sync stops. Launch refuses a plan in review.
  *   - Re-sync with the same plan bytes -> no-op (no writes at all).
+ *
+ * The record's `airspace` is the plan's declared block PLUS the derived `repo:`
+ * of every claimed git folder (sync runs locally, so it can see the folders; the
+ * cloud lane cannot). Both lanes therefore claim the same set. `planSha256` is the
+ * hash of the plan file's raw bytes; Send to Local Builds copies it verbatim.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -25,6 +30,7 @@ import { parse as parseYaml } from "yaml";
 import { validatePlan, PlanError } from "./parser.js";
 import { orchestrate } from "./orchestrator.js";
 import { draftAirspaceYaml, type AirspaceLane } from "./airspace.js";
+import { deriveRepoKeys } from "./airspace-launch.js";
 import type { BuildPlan } from "./types.js";
 
 /** Why a synced record cannot launch yet (absent = it can, from dry-run). */
@@ -59,9 +65,10 @@ export interface SyncedProject {
 
 /** Storage seam: Firestore + GCS in production, memory in the checks. */
 export interface SyncBackend {
-  getProject(projectId: string): Promise<(Partial<Omit<SyncedProject, "state">> & { state?: string; localLaunch?: { state?: string } }) | undefined>;
+  getProject(projectId: string): Promise<(Partial<Omit<SyncedProject, "state">> & { state?: string }) | undefined>;
   putProject(doc: SyncedProject): Promise<void>;
-  uploadPlan(projectId: string, yaml: string): Promise<string>;
+  /** Uploads the plan's exact bytes (the stored copy hashes to planSha256). */
+  uploadPlan(projectId: string, bytes: Buffer): Promise<string>;
 }
 
 export type SyncAction = "queued" | "updated" | "unchanged" | "generated-for-review" | "refused";
@@ -237,7 +244,7 @@ function classify(yaml: string): { plan?: BuildPlan; missingAirspace?: boolean; 
     const r = raw as Record<string, unknown> | null;
     if (r && typeof r === "object" && r.airspace === undefined) {
       try {
-        const plan = validatePlan({ ...r, airspace: ["path:__pending__"] }, { quiet: true });
+        const plan = validatePlan({ ...r, airspace: ["path:__pending__/__pending__"] }, { quiet: true });
         plan.airspace = [];
         return { plan, missingAirspace: true };
       } catch { /* invalid for other reasons too */ }
@@ -271,7 +278,8 @@ export async function syncProject(opts: {
   }
 
   const generated = !planFile;
-  const yaml = planFile ? readFileSync(planFile, "utf8") : generateSkeletonPlan(dir, localPath);
+  const raw = planFile ? readFileSync(planFile) : Buffer.from(generateSkeletonPlan(dir, localPath), "utf8");
+  const yaml = raw.toString("utf8");
   const planPath = planFile ? toPosix(relative(opts.root, planFile)) : "";
   const stem = planFile ? basename(planFile).replace(/(\.plan)?\.ya?ml$/i, "") : "generated";
   const projectId = syncProjectId(localPath, stem);
@@ -281,7 +289,7 @@ export async function syncProject(opts: {
     return { action: "refused", projectId, planPath, message: `plan is invalid, nothing queued: ${c.error}` };
   }
   const syncState: SyncState = generated ? "review" : c.missingAirspace ? "needs-airspace" : "dry-run";
-  const sha = createHash("sha256").update(yaml).digest("hex");
+  const sha = createHash("sha256").update(raw).digest("hex");
 
   const existing = await opts.backend.getProject(projectId);
   if (existing && existing.planSha256 === sha && existing.planPath === planPath) {
@@ -293,8 +301,7 @@ export async function syncProject(opts: {
       message: `already queued (${projectId}); plan unchanged, nothing written`,
     };
   }
-  if (existing && (existing.state === "running" || existing.localLaunch?.state === "running" ||
-      existing.localLaunch?.state === "requested")) {
+  if (existing && existing.state === "running") {
     return { action: "refused", projectId, planPath, message: `${projectId} is launching or running; sync again after it finishes` };
   }
 
@@ -307,7 +314,7 @@ export async function syncProject(opts: {
     return { action, projectId, syncState, planPath, message: `[preview] would ${action} ${projectId} as ${syncState}`, draft };
   }
 
-  const planUri = await opts.backend.uploadPlan(projectId, yaml);
+  const planUri = await opts.backend.uploadPlan(projectId, raw);
   const doc: SyncedProject = {
     projectId,
     name: c.plan.name,
@@ -320,7 +327,9 @@ export async function syncProject(opts: {
     planSource: generated ? "generated" : "existing",
     planSha256: sha,
     syncState,
-    airspace: c.missingAirspace ? undefined : c.plan.airspace,
+    airspace: c.missingAirspace
+      ? undefined
+      : [...new Set([...c.plan.airspace, ...deriveRepoKeys(c.plan.airspace, opts.root)])].sort(),
     airspaceDraft,
     dryRun: await dryRunSummary(c.plan),
     lanes: ["local", "cloud"],
@@ -358,9 +367,9 @@ export async function creatorSyncBackend(): Promise<SyncBackend> {
         { merge: true },
       );
     },
-    async uploadPlan(id, yaml) {
+    async uploadPlan(id, bytes) {
       const path = `plans/${id}.plan.yaml`;
-      await bucket.file(path).save(yaml, { contentType: "application/yaml", resumable: false });
+      await bucket.file(path).save(bytes, { contentType: "application/yaml", resumable: false });
       return `gs://${bucket.name}/${path}`;
     },
   };

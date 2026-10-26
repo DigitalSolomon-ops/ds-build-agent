@@ -19,6 +19,7 @@
  *  - Auth: needs a Codex login or CODEX_API_KEY / OPENAI_API_KEY in the env.
  */
 import { spawn } from "node:child_process";
+import { killTree, trackChild } from "./proc-tree.js";
 import type { BuildPlan, Task, TaskResult, TaskUsage } from "./types.js";
 import { sharedContext, taskPrompt } from "./prompt.js";
 import { modelRank } from "./model.js";
@@ -200,6 +201,7 @@ export async function runTaskCodex(
   repoPath: string,
   onMessage?: (text: string) => void,
   integrations?: AgentIntegrations,
+  signal?: AbortSignal,
 ): Promise<TaskResult> {
   const start = Date.now();
   void integrations; // Reserved: Codex MCP wiring is not part of this first cut.
@@ -227,7 +229,9 @@ export async function runTaskCodex(
 
     let child;
     try {
-      child = spawn(codexBin(env), args, { cwd: repoPath, env });
+      // detached on POSIX so the whole group can be killed when the airspace is lost.
+      child = spawn(codexBin(env), args, { cwd: repoPath, env, detached: process.platform !== "win32" });
+      trackChild(child);
     } catch (e) {
       return done({
         taskId: task.id,
@@ -235,6 +239,20 @@ export async function runTaskCodex(
         error: `codex spawn failed: ${(e as Error).message}`,
         durationMs: Date.now() - start,
       });
+    }
+
+    if (signal) {
+      const stop = () => {
+        if (child?.pid) killTree(child.pid);
+        done({
+          taskId: task.id,
+          status: "failed",
+          error: `codex stopped: ${String(signal.reason ?? "aborted")}`,
+          durationMs: Date.now() - start,
+        });
+      };
+      if (signal.aborted) stop();
+      else signal.addEventListener("abort", stop, { once: true });
     }
 
     child.on("error", (e: NodeJS.ErrnoException) => {

@@ -96,6 +96,11 @@ airspace:
     - portfolios/internal-tools/ds-build-agent/builds/ghl-mcp-connection
   other:
     - "ghl_mcp:single-location-connection"
+  # The sub-account is chosen by the human tasks `choose-subaccount` and `capture-location-id` below. Replace
+  # this placeholder with that location id before launching: a plan with ghl
+  # tasks must claim the sub-account it touches.
+  ghl_locations:
+    - REPLACE-WITH-CHOSEN-LOCATION-ID
 
 tasks:
 
